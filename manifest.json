@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "KOL Lite",
+  "description": "低价版 KOL 发现与线索管理 MVP：扫描当前页面、保存创作者、评分、备注并导出。",
+  "version": "0.1.0",
+  "action": {
+    "default_title": "KOL Lite"
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/sidepanel.html"
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "permissions": ["activeTab", "scripting", "sidePanel", "storage"],
+  "host_permissions": ["http://127.0.0.1:8787/*", "http://localhost:8787/*"]
+}

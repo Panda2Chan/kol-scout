@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KOL Lite Preview</title>
+    <link rel="stylesheet" href="./src/popup/popup.css" />
+    <style>
+      body {
+        width: min(100vw, 460px);
+        margin: 0 auto;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">KOL Lite</p>
+          <h1>创作者线索台</h1>
+        </div>
+        <button class="primary-button" type="button">扫描</button>
+      </header>
+
+      <section class="stats" aria-label="线索统计">
+        <div>
+          <span>12</span>
+          <small>已保存</small>
+        </div>
+        <div>
+          <span>3</span>
+          <small>本页候选</small>
+        </div>
+        <div>
+          <span>78</span>
+          <small>平均分</small>
+        </div>
+      </section>
+
+      <section class="toolbar" aria-label="数据操作">
+        <button class="secondary-button" type="button">增强</button>
+        <button class="secondary-button" type="button">匹配</button>
+        <button class="secondary-button" type="button">保存</button>
+        <button class="secondary-button" type="button">CSV</button>
+      </section>
+
+      <section class="match-panel" aria-label="AI 智能匹配">
+        <label for="preview-brief">理想创作者 Brief</label>
+        <textarea id="preview-brief" name="preview-brief">找 AI SaaS / 创业 / 跨境相关 X 创作者，粉丝 1万-50万，排除 crypto 和 politics</textarea>
+      </section>
+
+      <p class="notice success">扫描完成，发现 3 个候选。</p>
+
+      <section>
+        <h2>本页候选</h2>
+        <div class="list">
+          <article class="kol-card">
+            <div class="avatar" aria-hidden="true"></div>
+            <div class="kol-main">
+              <div class="kol-title">
+                <strong class="kol-name">Mia Chen</strong>
+                <span class="score">86 分</span>
+              </div>
+              <p class="meta">YouTube · @miachen · 128K followers</p>
+              <p class="discovery">X 帖子作者 · 待增强 · 从当前页面可见帖子作者识别。</p>
+              <p class="match">匹配 86 · 高匹配 · 内容命中 AI / startup</p>
+              <p class="bio">跨境品牌内容创作者，长期分享独立站增长、投放复盘和创作者合作。</p>
+              <div class="card-controls">
+                <select name="preview-status" aria-label="跟进状态">
+                  <option>已保存</option>
+                  <option>重点跟进</option>
+                </select>
+                <input name="preview-tags" value="DTC, YouTube" />
+              </div>
+              <textarea name="preview-notes" rows="2">适合测试低客单价 SaaS 联名内容。</textarea>
+              <div class="card-actions">
+                <a class="profile-link" href="#">打开主页</a>
+                <button type="button">保存</button>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

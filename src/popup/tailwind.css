@@ -1,0 +1,178 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply m-0 min-h-[620px] w-[440px] bg-slate-50 text-ink antialiased;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  button,
+  select,
+  input,
+  textarea {
+    font: inherit;
+  }
+}
+
+@layer components {
+  .app {
+    @apply p-4;
+  }
+
+  .topbar {
+    @apply flex items-start justify-between gap-3;
+  }
+
+  .eyebrow {
+    @apply m-0 text-[11px] font-bold uppercase tracking-normal text-slate-500;
+  }
+
+  h1 {
+    @apply m-0 mt-1 text-xl font-black leading-tight text-ink;
+  }
+
+  h2 {
+    @apply mb-2 mt-4 text-sm font-extrabold text-ink;
+  }
+
+  .primary-button {
+    @apply min-h-9 rounded-lg border-0 bg-brand px-4 text-sm font-bold text-white shadow-sm shadow-blue-200 transition hover:bg-blue-700 disabled:cursor-wait disabled:bg-slate-400;
+  }
+
+  .secondary-button {
+    @apply min-h-9 rounded-lg border border-line bg-white px-3 text-xs font-bold text-ink transition hover:border-brand hover:text-brand;
+  }
+
+  .danger {
+    @apply text-red-700 hover:border-red-300 hover:text-red-800;
+  }
+
+  .stats {
+    @apply mt-4 grid grid-cols-3 gap-2;
+  }
+
+  .stats div {
+    @apply rounded-lg border border-slate-200 bg-white p-3 shadow-sm;
+  }
+
+  .stats span {
+    @apply block text-xl font-black leading-none text-ink;
+  }
+
+  .stats small {
+    @apply mt-1 block text-[11px] text-slate-500;
+  }
+
+  .match-panel {
+    @apply mt-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm;
+  }
+
+  .match-panel label {
+    @apply block text-xs font-bold text-slate-600;
+  }
+
+  .match-panel textarea {
+    @apply mt-2 min-h-16 w-full resize-y rounded-lg border border-line bg-slate-50 px-3 py-2 text-xs leading-relaxed outline-none transition focus:border-brand focus:bg-white focus:ring-2 focus:ring-blue-100;
+  }
+
+  .filter-row {
+    @apply mt-2 grid grid-cols-[96px_1fr] items-center gap-2;
+  }
+
+  .filter-row label {
+    @apply text-xs font-bold text-slate-600;
+  }
+
+  .filter-row input {
+    @apply h-9 w-full rounded-lg border border-line bg-slate-50 px-3 text-xs outline-none transition focus:border-brand focus:bg-white focus:ring-2 focus:ring-blue-100;
+  }
+
+  .toolbar {
+    @apply mt-3 grid grid-cols-4 gap-2;
+  }
+
+  .notice {
+    @apply mt-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-relaxed text-sky-900;
+  }
+
+  .notice.error {
+    @apply border-red-100 bg-red-50 text-red-800;
+  }
+
+  .notice.success {
+    @apply border-emerald-100 bg-emerald-50 text-emerald-800;
+  }
+
+  .list {
+    @apply grid gap-2;
+  }
+
+  .list.empty {
+    @apply min-h-14 place-items-center rounded-lg border border-dashed border-slate-300 p-4 text-sm text-slate-500;
+  }
+
+  .kol-card {
+    @apply grid grid-cols-[44px_1fr] gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm;
+  }
+
+  .avatar {
+    @apply h-11 w-11 rounded-lg bg-cover bg-center;
+    background-image: linear-gradient(135deg, #fbbf24, #16837a);
+  }
+
+  .kol-main {
+    @apply min-w-0;
+  }
+
+  .kol-title {
+    @apply flex items-center justify-between gap-2;
+  }
+
+  .kol-name {
+    @apply truncate text-sm font-extrabold text-ink;
+  }
+
+  .score {
+    @apply shrink-0 rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-brand;
+  }
+
+  .meta {
+    @apply mt-1 text-xs leading-relaxed text-slate-600;
+  }
+
+  .discovery {
+    @apply mt-1 text-xs leading-relaxed text-sky-800;
+  }
+
+  .match {
+    @apply mt-1 text-xs leading-relaxed text-teal;
+  }
+
+  .bio {
+    @apply mt-1 line-clamp-2 text-xs leading-relaxed text-slate-500;
+  }
+
+  .card-controls {
+    @apply mt-2 grid grid-cols-[118px_1fr] gap-2;
+  }
+
+  .status-select,
+  .tag-input,
+  .notes-input {
+    @apply w-full rounded-lg border border-line bg-white px-2 py-2 text-xs text-ink outline-none transition focus:border-brand focus:ring-2 focus:ring-blue-100;
+  }
+
+  .notes-input {
+    @apply mt-2 min-h-12 resize-y;
+  }
+
+  .card-actions {
+    @apply mt-2 flex items-center justify-end gap-2;
+  }
+
+  .profile-link {
+    @apply mr-auto text-xs font-bold text-brand no-underline hover:text-blue-700;
+  }
+}

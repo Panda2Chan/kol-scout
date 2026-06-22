@@ -1,0 +1,15 @@
+{
+  "name": "easykol-lite-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "backend": "node backend/server.js",
+    "build:css": "tailwindcss -i ./src/popup/tailwind.css -o ./src/popup/popup.css --minify",
+    "dev:css": "tailwindcss -i ./src/popup/tailwind.css -o ./src/popup/popup.css --watch",
+    "check": "find src backend -name '*.js' -print0 | xargs -0 -n1 node --check && node -e \"JSON.parse(require('fs').readFileSync('manifest.json','utf8')); console.log('manifest ok')\""
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.17"
+  }
+}

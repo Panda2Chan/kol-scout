@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KOL Lite</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">KOL Lite</p>
+          <h1>创作者线索台</h1>
+        </div>
+        <button id="scanButton" class="primary-button" type="button">扫描</button>
+      </header>
+
+      <section class="stats" aria-label="线索统计">
+        <div>
+          <span id="savedCount">0</span>
+          <small>已保存</small>
+        </div>
+        <div>
+          <span id="candidateCount">0</span>
+          <small>本页候选</small>
+        </div>
+        <div>
+          <span id="avgScore">0</span>
+          <small>平均分</small>
+        </div>
+      </section>
+
+      <section class="match-panel" aria-label="AI 智能匹配">
+        <label for="matchBrief">理想创作者 Brief</label>
+        <textarea
+          id="matchBrief"
+          name="matchBrief"
+          placeholder="例如：找 AI SaaS / 创业 / 跨境相关 X 创作者，粉丝 1万-50万，排除 crypto 和 politics"
+        ></textarea>
+        <div class="filter-row">
+          <label for="minFollowers">粉丝数下限</label>
+          <input id="minFollowers" name="minFollowers" type="number" min="0" step="1000" placeholder="例如 10000" />
+        </div>
+      </section>
+
+      <section class="toolbar" aria-label="数据操作">
+        <button id="matchButton" class="secondary-button" type="button">全站匹配</button>
+        <button id="saveAllButton" class="secondary-button" type="button">保存</button>
+        <button id="exportCsvButton" class="secondary-button" type="button">CSV</button>
+        <button id="exportJsonButton" class="secondary-button" type="button">JSON</button>
+      </section>
+
+      <p id="notice" class="notice">输入关键词和筛选需求后点全站匹配，后端会查询数据源、过滤低质账号并按匹配度排序。</p>
+
+      <section>
+        <h2>本页候选</h2>
+        <div id="candidateList" class="list empty">暂无候选</div>
+      </section>
+
+      <section>
+        <h2>已保存线索</h2>
+        <div id="savedList" class="list empty">暂无保存线索</div>
+      </section>
+    </main>
+
+    <template id="kolCardTemplate">
+      <article class="kol-card">
+        <div class="avatar" aria-hidden="true"></div>
+        <div class="kol-main">
+          <div class="kol-title">
+            <strong class="kol-name"></strong>
+            <span class="score"></span>
+          </div>
+          <p class="meta"></p>
+          <p class="discovery"></p>
+          <p class="match"></p>
+          <p class="bio"></p>
+          <div class="card-controls">
+            <select class="status-select" name="status" aria-label="跟进状态">
+              <option value="saved">已保存</option>
+              <option value="shortlisted">重点跟进</option>
+              <option value="contacted">已联系</option>
+              <option value="ignored">忽略</option>
+            </select>
+            <input class="tag-input" name="tags" placeholder="标签，用逗号分隔" />
+          </div>
+          <textarea class="notes-input" name="notes" rows="2" placeholder="备注"></textarea>
+          <div class="card-actions">
+            <a class="profile-link" target="_blank" rel="noreferrer">打开主页</a>
+            <button class="contact-one" type="button">联系</button>
+            <button class="save-one" type="button">保存</button>
+            <button class="delete-one danger" type="button">删除</button>
+          </div>
+        </div>
+      </article>
+    </template>
+
+    <script type="module" src="./popup.js"></script>
+  </body>
+</html>

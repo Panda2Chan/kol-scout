@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KOL Lite</title>
+    <link rel="stylesheet" href="./sidepanel.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <strong>KOL Lite</strong>
+          <span>X OP 全站匹配</span>
+        </div>
+        <button class="text-btn" type="button" id="scanButton">扫描当前页</button>
+        <button class="text-btn" type="button" id="exportCsvButton">导出已保存</button>
+      </header>
+
+      <section class="search-panel" id="searchPanel">
+        <label class="field">
+          <span>关键词与筛选需求</span>
+          <textarea id="matchBrief" placeholder="例如：女，亚洲，美妆，coser，粉丝 10 万以上"></textarea>
+        </label>
+
+        <label class="field compact">
+          <span>粉丝数下限</span>
+          <input id="minFollowers" type="number" min="0" step="1000" placeholder="10000" />
+        </label>
+
+        <button class="primary-btn" type="button" id="discoverButton">全站匹配</button>
+      </section>
+
+      <section class="list-panel" id="listPanel">
+        <div class="tabs" role="tablist">
+          <button class="tab active" type="button" data-view="candidates" id="candidateTab">候选 0</button>
+          <button class="tab" type="button" data-view="saved" id="savedTab">已保存 0</button>
+        </div>
+
+        <div class="list-toolbar">
+          <button class="secondary-btn" type="button" id="saveAllButton">保存全部候选</button>
+          <button class="secondary-btn danger" type="button" id="clearButton">清空候选</button>
+        </div>
+
+        <div class="notice" id="notice"></div>
+        <div class="cards" id="cardList"></div>
+      </section>
+    </main>
+
+    <template id="cardTemplate">
+      <article class="creator-card">
+        <div class="card-head">
+          <div class="avatar"></div>
+          <div class="creator-main">
+            <strong class="name"></strong>
+            <span class="meta"></span>
+          </div>
+          <span class="score"></span>
+        </div>
+        <p class="bio"></p>
+        <div class="chips"></div>
+        <div class="card-actions">
+          <button type="button" data-action="profile">主页</button>
+          <button type="button" data-action="contact">联系</button>
+          <button type="button" data-action="save">保存</button>
+        </div>
+      </article>
+    </template>
+
+    <script type="module" src="./sidepanel.js"></script>
+  </body>
+</html>
