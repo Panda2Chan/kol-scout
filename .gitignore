@@ -12,6 +12,7 @@ dist/
 build/
 coverage/
 .cache/
+.codegraph/
 
 # Editor state
 .idea/
