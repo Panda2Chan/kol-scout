@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const DEFAULT_MODEL = "gpt-5.5";
-const DEFAULT_TIMEOUT_MS = 25_000;
+const DEFAULT_TIMEOUT_MS = 60_000;
 const PLAN_CACHE_TTL_MS = 10 * 60 * 1000;
 const AI_WEB_SEARCH_TIMEOUT_MS = 180_000;
 const planCache = new Map();
@@ -35,7 +35,7 @@ export class AiSearchError extends Error {
 export async function buildAiCreatorSearchPlan(brief, fallbackPlan, options = {}) {
   const config = loadAiConfig(options);
   const basePlan = fallbackPlan || {};
-  const requireAi = options.requireAi ?? process.env.AI_SEARCH_OPTIONAL !== "true";
+  const requireAi = options.requireAi ?? process.env.AI_SEARCH_REQUIRED === "true";
 
   if (!config.apiKey || !config.baseUrl) {
     if (requireAi) {
@@ -58,7 +58,11 @@ export async function buildAiCreatorSearchPlan(brief, fallbackPlan, options = {}
   if (cached) return cached;
 
   try {
-    const aiPlan = await requestAiSearchPlan(config, prompt);
+    const searchSignal = createTimeoutSignal(
+      readTimeoutMs(process.env.AI_SEARCH_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
+      options.signal
+    );
+    const aiPlan = await requestAiSearchPlan(config, prompt, searchSignal);
     const normalized = normalizeAiPlan(aiPlan, basePlan);
     const plan = {
       ...mergeSearchPlan(basePlan, normalized),
@@ -81,15 +85,15 @@ export async function buildAiCreatorSearchPlan(brief, fallbackPlan, options = {}
     planCache.set(cacheKey, { expiresAt: Date.now() + PLAN_CACHE_TTL_MS, plan });
     return plan;
   } catch (error) {
-    if (requireAi || process.env.AI_SEARCH_REQUIRED === "true") {
-      throw new AiSearchError(`AI 搜索计划失败：${error.message}`, "AI_SEARCH_FAILED", 502);
+    if (requireAi) {
+      throw new AiSearchError(`AI 搜索计划失败：${formatAiErrorMessage(error)}`, "AI_SEARCH_FAILED", 502);
     }
 
     return withFallback(basePlan, {
       enabled: false,
       provider: config.provider,
       model: config.model,
-      reason: `AI 搜索计划失败，已使用规则兜底：${error.message}`
+      reason: `AI 搜索计划未完成，已使用规则兜底：${formatAiErrorMessage(error)}`
     });
   }
 }
@@ -101,6 +105,10 @@ export async function discoverCreatorsWithAiWebSearch(brief, plan, options = {})
   }
 
   const prompt = buildAiWebSearchPrompt(brief, plan, options);
+  const searchSignal = createTimeoutSignal(
+    readTimeoutMs(process.env.AI_WEB_SEARCH_TIMEOUT_MS, AI_WEB_SEARCH_TIMEOUT_MS),
+    options.signal
+  );
   const response = await fetch(config.responsesUrl, {
     method: "POST",
     headers: {
@@ -116,7 +124,7 @@ export async function discoverCreatorsWithAiWebSearch(brief, plan, options = {})
       max_output_tokens: 1100,
       store: false
     }),
-    signal: AbortSignal.timeout(Number(process.env.AI_WEB_SEARCH_TIMEOUT_MS || AI_WEB_SEARCH_TIMEOUT_MS))
+    signal: searchSignal
   });
 
   const payload = await response.json().catch(() => ({}));
@@ -305,9 +313,9 @@ JSON 格式：{"creators":[{"handle":"@...","name":"","profileUrl":"https://x.co
   return { system, user };
 }
 
-async function requestAiSearchPlan(config, prompt) {
+async function requestAiSearchPlan(config, prompt, signal) {
   if (process.env.AI_SEARCH_API_MODE !== "responses") {
-    return requestChatCompletionsSearchPlan(config, prompt);
+    return requestChatCompletionsSearchPlan(config, prompt, "", signal);
   }
 
   const responsePayload = {
@@ -324,11 +332,11 @@ async function requestAiSearchPlan(config, prompt) {
       Authorization: `Bearer ${config.apiKey}`
     },
     body: JSON.stringify(responsePayload),
-    signal: AbortSignal.timeout(Number(process.env.AI_SEARCH_TIMEOUT_MS || DEFAULT_TIMEOUT_MS))
+    signal
   }).catch((error) => ({ networkError: error }));
 
   if (response.networkError) {
-    return requestChatCompletionsSearchPlan(config, prompt, response.networkError.message);
+    return requestChatCompletionsSearchPlan(config, prompt, response.networkError.message, signal);
   }
 
   const payload = await response.json().catch(() => ({}));
@@ -336,7 +344,8 @@ async function requestAiSearchPlan(config, prompt) {
     return requestChatCompletionsSearchPlan(
       config,
       prompt,
-      payload.error?.message || `OpenAI Responses 请求失败：${response.status}`
+      payload.error?.message || `OpenAI Responses 请求失败：${response.status}`,
+      signal
     );
   }
 
@@ -345,7 +354,7 @@ async function requestAiSearchPlan(config, prompt) {
   return parseJsonObject(text);
 }
 
-async function requestChatCompletionsSearchPlan(config, prompt, previousError = "") {
+async function requestChatCompletionsSearchPlan(config, prompt, previousError = "", signal) {
   const url = config.chatCompletionsUrl;
   const response = await fetch(url, {
     method: "POST",
@@ -361,7 +370,7 @@ async function requestChatCompletionsSearchPlan(config, prompt, previousError = 
       ],
       max_tokens: 700
     }),
-    signal: AbortSignal.timeout(Number(process.env.AI_SEARCH_TIMEOUT_MS || DEFAULT_TIMEOUT_MS))
+    signal
   });
 
   const payload = await response.json().catch(() => ({}));
@@ -581,6 +590,34 @@ function withFallback(plan, aiSearch) {
       generatedAt: Date.now()
     }
   };
+}
+
+function formatAiErrorMessage(error) {
+  const message = String(error?.message || error || "");
+  if (error?.name === "TimeoutError" || error?.name === "AbortError" || /aborted|timeout/i.test(message)) {
+    return "AI 请求超时";
+  }
+  return message || "未知错误";
+}
+
+function readTimeoutMs(value, fallback) {
+  const timeoutMs = Number(value || fallback);
+  return Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : fallback;
+}
+
+function createTimeoutSignal(timeoutMs, parentSignal) {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  if (!parentSignal) return timeoutSignal;
+  if (parentSignal.aborted) return parentSignal;
+  if (AbortSignal.any) return AbortSignal.any([parentSignal, timeoutSignal]);
+
+  const controller = new AbortController();
+  const abort = () => {
+    controller.abort(parentSignal.aborted ? parentSignal.reason : timeoutSignal.reason);
+  };
+  parentSignal.addEventListener("abort", abort, { once: true });
+  timeoutSignal.addEventListener("abort", abort, { once: true });
+  return controller.signal;
 }
 
 function buildQueryFromTerms(positiveTerms, negativeTerms) {

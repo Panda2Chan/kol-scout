@@ -54,7 +54,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "SEARCH_CREATORS") {
-    searchCreators(message.payload?.brief || {})
+    searchCreators(message.payload?.brief || {}, message.payload || {})
       .then((plan) => sendResponse({ ok: true, plan }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -121,11 +121,12 @@ async function matchCandidates(brief, candidates) {
     .sort((a, b) => (b.match?.score ?? -1) - (a.match?.score ?? -1));
 }
 
-async function searchCreators(brief) {
-  const response = await postJson("/api/search/creators", { brief, platform: "x", locale: "zh-CN" });
+async function searchCreators(brief, options = {}) {
+  const platform = normalizePlatform(options.platform || brief.platforms?.[0] || "x");
+  const response = await postJson("/api/search/creators", { brief, platform, locale: "zh-CN" });
   const plan = response.plan;
   if (!plan?.searchUrl) {
-    throw new Error("后端没有返回可跳转的 X 搜索地址");
+    throw new Error("后端没有返回可跳转的搜索地址");
   }
 
   await navigateActiveTab(plan.searchUrl);
@@ -153,11 +154,23 @@ async function openCreatorProfile(profileUrl) {
   }
 
   const url = new URL(profileUrl);
-  if (!["x.com", "twitter.com"].includes(url.hostname.replace(/^www\./, ""))) {
-    throw new Error("当前仅支持跳转 X 创作者主页");
+  if (!isAllowedCreatorProfileHost(url.hostname)) {
+    throw new Error("当前仅支持跳转 X 或 TikTok 创作者主页");
   }
 
   return navigateActiveTab(url.toString());
+}
+
+function isAllowedCreatorProfileHost(hostname) {
+  const host = String(hostname || "").replace(/^www\./, "").toLowerCase();
+  return ["x.com", "twitter.com", "tiktok.com", "m.tiktok.com", "vm.tiktok.com"].includes(host);
+}
+
+function normalizePlatform(platform) {
+  const normalized = String(platform || "x").toLowerCase().replace(/\s+/g, "");
+  if (normalized === "twitter") return "x";
+  if (normalized === "tiktok" || normalized === "douyin" || normalized === "抖音") return "tiktok";
+  return normalized || "x";
 }
 
 async function navigateActiveTab(url) {

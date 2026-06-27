@@ -17,6 +17,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -93,7 +94,8 @@ textarea {
 }
 
 textarea,
-input {
+input,
+select {
   width: 100%;
   border: 1px solid #dce2eb;
   border-radius: 12px;
@@ -109,13 +111,32 @@ textarea {
   line-height: 1.45;
 }
 
-input {
+input,
+select {
   height: 40px;
   padding: 0 12px;
 }
 
+select {
+  padding-right: 36px;
+  color: #172033;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #697386 50%),
+    linear-gradient(135deg, #697386 50%, transparent 50%);
+  background-position:
+    calc(100% - 17px) 17px,
+    calc(100% - 12px) 17px;
+  background-repeat: no-repeat;
+  background-size:
+    5px 5px,
+    5px 5px;
+  font-weight: 800;
+  appearance: none;
+}
+
 textarea:focus,
-input:focus {
+input:focus,
+select:focus {
   border-color: #276ef1;
   box-shadow: 0 0 0 3px rgba(39, 110, 241, 0.12);
 }
@@ -217,6 +238,96 @@ input:focus {
   background: #fff0f0;
 }
 
+.progress-panel {
+  display: grid;
+  gap: 9px;
+  margin-bottom: 10px;
+  padding: 10px 11px;
+  border: 1px solid #dce2eb;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.progress-panel[hidden] {
+  display: none;
+}
+
+.progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #172033;
+  font-size: 12px;
+}
+
+.progress-head span {
+  color: #6b7280;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.progress-track {
+  overflow: hidden;
+  height: 8px;
+  border-radius: 999px;
+  background: #e9edf3;
+}
+
+.progress-track span {
+  display: block;
+  width: 8%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #276ef1, #00a28a);
+  transition: width 260ms ease;
+}
+
+.progress-steps {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.progress-steps li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  color: #8a93a2;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.progress-steps li::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  margin-left: 5px;
+  border-radius: 999px;
+  background: #cbd5e1;
+}
+
+.progress-steps li.active {
+  color: #172033;
+  font-weight: 900;
+}
+
+.progress-steps li.active::before {
+  background: #276ef1;
+  box-shadow: 0 0 0 4px rgba(39, 110, 241, 0.12);
+}
+
+.progress-steps li.done {
+  color: #4d5b70;
+}
+
+.progress-steps li.done::before {
+  background: #00a28a;
+}
+
 .cards {
   display: grid;
   flex: 1;
@@ -306,6 +417,17 @@ input:focus {
   line-height: 1.45;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+}
+
+.match-reasons {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .chips {

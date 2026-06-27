@@ -28,6 +28,9 @@ const SEARCH_STOPWORDS = new Set([
   "search",
   "the",
   "to",
+  "tiktok",
+  "tik",
+  "tok",
   "twitter",
   "want",
   "with",
@@ -48,6 +51,7 @@ const SEARCH_STOPWORDS = new Set([
   "排除",
   "类似",
   "类似的",
+  "抖音",
   "相关",
   "粉丝",
   "账号",
@@ -367,43 +371,71 @@ function extractExplicitExcludeTerms(text) {
 }
 
 function extractDirectProfiles(text, platform) {
-  if (platform !== "x") return [];
-
   const handles = new Set();
   const rawText = String(text || "");
 
-  for (const match of rawText.matchAll(/(?:https?:\/\/)?(?:www\.)?(?:x|twitter)\.com\/([A-Za-z0-9_]{1,15})(?:[/?#]|$)/g)) {
-    handles.add(`@${match[1]}`);
+  if (platform === "x") {
+    for (const match of rawText.matchAll(/(?:https?:\/\/)?(?:www\.)?(?:x|twitter)\.com\/([A-Za-z0-9_]{1,15})(?:[/?#]|$)/g)) {
+      handles.add(`@${match[1]}`);
+    }
+
+    for (const match of rawText.matchAll(/(^|[^A-Za-z0-9_])@([A-Za-z0-9_]{1,15})(?=$|[^A-Za-z0-9_])/g)) {
+      handles.add(`@${match[2]}`);
+    }
   }
 
-  for (const match of rawText.matchAll(/(^|[^A-Za-z0-9_])@([A-Za-z0-9_]{1,15})(?=$|[^A-Za-z0-9_])/g)) {
-    handles.add(`@${match[2]}`);
+  if (platform === "tiktok") {
+    for (const match of rawText.matchAll(/(?:https?:\/\/)?(?:www\.)?tiktok\.com\/@([A-Za-z0-9._]{2,24})(?:[/?#]|$)/gi)) {
+      handles.add(`@${match[1]}`);
+    }
+
+    for (const match of rawText.matchAll(/(^|[^A-Za-z0-9_.])@([A-Za-z0-9._]{2,24})(?=$|[^A-Za-z0-9._])/g)) {
+      handles.add(`@${match[2]}`);
+    }
   }
 
   return [...handles];
 }
 
 function normalizeSearchPlatform(platform) {
-  const normalized = String(platform || "x").toLowerCase();
+  const normalized = String(platform || "x").toLowerCase().replace(/\s+/g, "");
   if (normalized === "twitter") return "x";
+  if (normalized === "tiktok" || normalized === "douyin" || normalized === "抖音") return "tiktok";
   return normalized;
 }
 
 function buildSearchNotes(brief) {
-  const notes = ["这是辅助搜索计划；主流程应优先使用 /api/discover/creators 返回已筛选排序的 OP 列表。"];
+  const notes = ["这是辅助搜索计划；主流程应优先使用 /api/discover/creators 返回已筛选排序的创作者列表。"];
   if (brief.followerRange.min || brief.followerRange.max) {
-    notes.push("粉丝区间无法可靠编码进 X 搜索 URL，但 discover 管线会在数据源返回指标后参与评分。");
+    notes.push("粉丝区间无法可靠编码进站内搜索 URL，但 discover 管线会在数据源返回指标后参与评分。");
   }
   return notes;
 }
 
 function parseFollowerRange(text) {
   const range = { min: null, max: null };
-  const match = text.match(/(\d+(?:\.\d+)?)\s*([kKmM万千]?)\s*[-~到至]\s*(\d+(?:\.\d+)?)\s*([kKmM万千]?)/);
-  if (!match) return range;
+  const rangeMatch = text.match(/(\d+(?:\.\d+)?)\s*([kKmM万千]?)\s*[-~到至]\s*(\d+(?:\.\d+)?)\s*([kKmM万千]?)/);
+  if (rangeMatch) {
+    range.min = toNumber(rangeMatch[1], rangeMatch[2]);
+    range.max = toNumber(rangeMatch[3], rangeMatch[4]);
+    return range;
+  }
 
-  range.min = toNumber(match[1], match[2]);
-  range.max = toNumber(match[3], match[4]);
+  const minMatch = text.match(/(?:粉丝数?|粉丝量|followers?|fans?)\s*(?:下限|至少|最低|不少于|大于|超过|>=|＞|>)\s*(\d+(?:\.\d+)?)\s*([kKmM万千]?)/i)
+    || text.match(/(?:粉丝数?|粉丝量|followers?|fans?)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*([kKmM万千]?)(?!\s*(?:以内|以下|上限|最多|最高|不超过|少于|低于|<=|＜|<))/i)
+    || text.match(/(\d+(?:\.\d+)?)\s*([kKmM万千]?)\s*(?:粉|粉丝|followers?|fans?)\s*(?:以上|起|以上的|及以上|\+|plus)/i);
+  if (minMatch) {
+    range.min = toNumber(minMatch[1], minMatch[2]);
+    return range;
+  }
+
+  const maxMatch = text.match(/(?:粉丝|followers?|fans?)\s*(?:上限|最多|最高|不超过|少于|低于|<=|＜|<)\s*(\d+(?:\.\d+)?)\s*([kKmM万千]?)/i)
+    || text.match(/(\d+(?:\.\d+)?)\s*([kKmM万千]?)\s*(?:粉|粉丝|followers?|fans?)\s*(?:以内|以下|以内的|及以下)/i);
+  if (maxMatch) {
+    range.max = toNumber(maxMatch[1], maxMatch[2]);
+    return range;
+  }
+
   return range;
 }
 

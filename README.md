@@ -1,13 +1,14 @@
 # KOL Lite MVP
 
-面向 KOL 运营场景的 Chrome 插件 MVP。当前版本优先覆盖 X 平台：
-通过 AI 全站匹配召回真实 OP，读取公开主页资料，按匹配度和质量过滤后生成候选 list。
+面向 KOL 运营场景的 Chrome 插件 MVP。当前版本覆盖 X 和 TikTok：
+通过全站匹配召回真实创作者，读取公开主页资料，按匹配度和质量过滤后生成候选 list。
 
 ## 已实现能力
 
 - Chrome Side Panel 形态，不遮挡网页内容
-- X 全站匹配：输入关键词和筛选需求后召回真实 OP
-- AI 搜索规划和 Web Search 召回，默认使用 cc-switch / OpenAI 配置
+- X / TikTok 全站匹配：输入关键词和筛选需求后召回真实创作者
+- X 支持 AI 搜索规划和 Web Search 召回，默认使用 cc-switch / OpenAI 配置
+- TikTok 支持三方数据源和公开网页搜索兜底召回
 - 公开主页补全：头像、简介、粉丝量、邮箱
 - 粉丝数下限筛选
 - 低质量、疑似品牌号、疑似假粉/异常互动过滤
@@ -28,7 +29,7 @@
 │   └── shared            # schema、storage、export
 └── backend
     ├── server.js         # 本地 API
-    ├── platforms         # 多平台 provider 架构，当前先实现 X
+    ├── platforms         # 多平台 provider 架构，当前实现 X / TikTok
     └── services          # AI 搜索、匹配、发现和质量过滤
 ```
 
@@ -87,11 +88,19 @@ AI 搜索优先读取：
 - `KOL_DATA_API_URL`
 - `KOL_DATA_API_KEY`
 
-未配置三方源时，后端会使用 AI Web Search 和网页搜索兜底召回真实 X 账号。
+TikTok 多源搜索聚合可选，配置后会优先合并这些搜索源结果：
+
+- `SERPER_API_KEY`
+- `TAVILY_API_KEY`
+- `BRAVE_SEARCH_API_KEY`
+- `JINA_API_KEY`
+
+未配置三方源时，X 会使用 AI Web Search 和网页搜索兜底召回；
+TikTok 会使用已配置的搜索聚合源，并回退到公开网页搜索兜底召回。
 
 ## MVP 边界
 
 - 只采集公开可见信息
 - 不绕过平台限制
 - 不做登录态爬取
-- 粉丝量、邮箱、简介来自公开页面或 AI Web Search，可用于运营初筛，最终合作前仍需人工复核
+- 粉丝量、邮箱、简介来自公开页面、AI Web Search 或三方数据源，可用于运营初筛，最终合作前仍需人工复核

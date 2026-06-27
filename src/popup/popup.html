@@ -36,11 +36,43 @@
         <textarea
           id="matchBrief"
           name="matchBrief"
-          placeholder="例如：找 AI SaaS / 创业 / 跨境相关 X 创作者，粉丝 1万-50万，排除 crypto 和 politics"
+          placeholder="例如：找 AI SaaS / 创业 / 跨境相关创作者，粉丝 1万-50万，排除 crypto 和 politics"
         ></textarea>
         <div class="filter-row">
           <label for="minFollowers">粉丝数下限</label>
           <input id="minFollowers" name="minFollowers" type="number" min="0" step="1000" placeholder="例如 10000" />
+        </div>
+        <div class="filter-row">
+          <label for="platformSelect">目标平台</label>
+          <select id="platformSelect" name="platformSelect" class="select-control">
+            <option value="x">X</option>
+            <option value="tiktok">TikTok</option>
+          </select>
+        </div>
+        <div class="filter-row">
+          <label for="countrySelect">目标国家</label>
+          <select id="countrySelect" name="countrySelect" class="select-control">
+            <option value="">🌐 不限国家</option>
+            <option value="US">🇺🇸 美国</option>
+            <option value="GB">🇬🇧 英国</option>
+            <option value="CA">🇨🇦 加拿大</option>
+            <option value="AU">🇦🇺 澳大利亚</option>
+            <option value="JP">🇯🇵 日本</option>
+            <option value="KR">🇰🇷 韩国</option>
+            <option value="SG">🇸🇬 新加坡</option>
+            <option value="DE">🇩🇪 德国</option>
+            <option value="FR">🇫🇷 法国</option>
+            <option value="IT">🇮🇹 意大利</option>
+            <option value="ES">🇪🇸 西班牙</option>
+            <option value="BR">🇧🇷 巴西</option>
+            <option value="MX">🇲🇽 墨西哥</option>
+            <option value="ID">🇮🇩 印尼</option>
+            <option value="TH">🇹🇭 泰国</option>
+            <option value="VN">🇻🇳 越南</option>
+            <option value="PH">🇵🇭 菲律宾</option>
+            <option value="MY">🇲🇾 马来西亚</option>
+            <option value="IN">🇮🇳 印度</option>
+          </select>
         </div>
       </section>
 
@@ -52,6 +84,17 @@
       </section>
 
       <p id="notice" class="notice">输入关键词和筛选需求后点全站匹配，后端会查询数据源、过滤低质账号并按匹配度排序。</p>
+
+      <section class="progress-panel" id="progressPanel" hidden>
+        <div class="progress-head">
+          <strong id="progressTitle">全站匹配进行中</strong>
+          <span id="progressMeta">0 秒</span>
+        </div>
+        <div class="progress-track">
+          <span id="progressBar"></span>
+        </div>
+        <ol class="progress-steps" id="progressSteps"></ol>
+      </section>
 
       <section>
         <h2>本页候选</h2>
@@ -76,8 +119,9 @@
           <p class="discovery"></p>
           <p class="match"></p>
           <p class="bio"></p>
+          <p class="match-reasons"></p>
           <div class="card-controls">
-            <select class="status-select" name="status" aria-label="跟进状态">
+            <select class="status-select select-control" name="status" aria-label="跟进状态">
               <option value="saved">已保存</option>
               <option value="shortlisted">重点跟进</option>
               <option value="contacted">已联系</option>

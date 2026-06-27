@@ -11,7 +11,7 @@
       <header class="topbar">
         <div>
           <strong>KOL Lite</strong>
-          <span>X OP 全站匹配</span>
+          <span>创作者全站匹配</span>
         </div>
         <button class="text-btn" type="button" id="scanButton">扫描当前页</button>
         <button class="text-btn" type="button" id="exportCsvButton">导出已保存</button>
@@ -26,6 +26,40 @@
         <label class="field compact">
           <span>粉丝数下限</span>
           <input id="minFollowers" type="number" min="0" step="1000" placeholder="10000" />
+        </label>
+
+        <label class="field compact">
+          <span>目标平台</span>
+          <select id="platformSelect" class="select-control">
+            <option value="x">X</option>
+            <option value="tiktok">TikTok</option>
+          </select>
+        </label>
+
+        <label class="field compact">
+          <span>目标国家</span>
+          <select id="countrySelect" class="select-control">
+            <option value="">🌐 不限国家</option>
+            <option value="US">🇺🇸 美国</option>
+            <option value="GB">🇬🇧 英国</option>
+            <option value="CA">🇨🇦 加拿大</option>
+            <option value="AU">🇦🇺 澳大利亚</option>
+            <option value="JP">🇯🇵 日本</option>
+            <option value="KR">🇰🇷 韩国</option>
+            <option value="SG">🇸🇬 新加坡</option>
+            <option value="DE">🇩🇪 德国</option>
+            <option value="FR">🇫🇷 法国</option>
+            <option value="IT">🇮🇹 意大利</option>
+            <option value="ES">🇪🇸 西班牙</option>
+            <option value="BR">🇧🇷 巴西</option>
+            <option value="MX">🇲🇽 墨西哥</option>
+            <option value="ID">🇮🇩 印尼</option>
+            <option value="TH">🇹🇭 泰国</option>
+            <option value="VN">🇻🇳 越南</option>
+            <option value="PH">🇵🇭 菲律宾</option>
+            <option value="MY">🇲🇾 马来西亚</option>
+            <option value="IN">🇮🇳 印度</option>
+          </select>
         </label>
 
         <button class="primary-btn" type="button" id="discoverButton">全站匹配</button>
@@ -43,6 +77,16 @@
         </div>
 
         <div class="notice" id="notice"></div>
+        <div class="progress-panel" id="progressPanel" hidden>
+          <div class="progress-head">
+            <strong id="progressTitle">全站匹配进行中</strong>
+            <span id="progressMeta">0 秒</span>
+          </div>
+          <div class="progress-track">
+            <span id="progressBar"></span>
+          </div>
+          <ol class="progress-steps" id="progressSteps"></ol>
+        </div>
         <div class="cards" id="cardList"></div>
       </section>
     </main>
@@ -58,6 +102,7 @@
           <span class="score"></span>
         </div>
         <p class="bio"></p>
+        <p class="match-reasons"></p>
         <div class="chips"></div>
         <div class="card-actions">
           <button type="button" data-action="profile">主页</button>

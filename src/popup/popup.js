@@ -13,12 +13,15 @@ const state = {
   candidates: [],
   saved: [],
   loadingTimer: null,
-  loadingStep: 0
+  loadingStartedAt: 0,
+  loadingStep: 0,
+  platform: "x",
+  country: ""
 };
 
 const DISCOVERY_LOADING_STEPS = [
   "正在理解你的筛选需求，生成 KOL 搜索策略...",
-  "正在调用 AI Web Search 全站检索真实 X OP...",
+  "正在检索真实创作者主页...",
   "正在读取公开简介、粉丝量和邮箱...",
   "正在过滤品牌号、低质号和低匹配账号...",
   "正在按匹配度整理候选列表..."
@@ -32,10 +35,17 @@ const elements = {
   exportJsonButton: document.querySelector("#exportJsonButton"),
   matchBrief: document.querySelector("#matchBrief"),
   minFollowers: document.querySelector("#minFollowers"),
+  platformSelect: document.querySelector("#platformSelect"),
+  countrySelect: document.querySelector("#countrySelect"),
   savedCount: document.querySelector("#savedCount"),
   candidateCount: document.querySelector("#candidateCount"),
   avgScore: document.querySelector("#avgScore"),
   notice: document.querySelector("#notice"),
+  progressPanel: document.querySelector("#progressPanel"),
+  progressTitle: document.querySelector("#progressTitle"),
+  progressMeta: document.querySelector("#progressMeta"),
+  progressBar: document.querySelector("#progressBar"),
+  progressSteps: document.querySelector("#progressSteps"),
   candidateList: document.querySelector("#candidateList"),
   savedList: document.querySelector("#savedList"),
   template: document.querySelector("#kolCardTemplate")
@@ -47,6 +57,12 @@ elements.saveAllButton.addEventListener("click", saveAllCandidates);
 elements.exportCsvButton.addEventListener("click", () => downloadCsv("kol-lite.csv", state.saved));
 elements.exportJsonButton?.addEventListener("click", () => {
   downloadJson(`kol-lite-${new Date().toISOString().slice(0, 10)}.json`, state.saved);
+});
+elements.platformSelect.addEventListener("change", () => {
+  state.platform = normalizePlatform(elements.platformSelect.value, elements.matchBrief.value);
+});
+elements.countrySelect.addEventListener("change", () => {
+  state.country = elements.countrySelect.value;
 });
 
 await hydrateBrief();
@@ -111,17 +127,18 @@ async function matchCandidates() {
 async function searchCreators() {
   const brief = createMatchBrief(elements.matchBrief.value);
   if (!brief.rawText) {
-    setNotice("先输入理想创作者 Brief，再进行 X 全站搜索。", "error");
+    setNotice("先输入理想创作者 Brief，再进行全站搜索。", "error");
     return;
   }
 
   await setMatchBrief(brief);
+  state.platform = normalizePlatform(elements.platformSelect.value, brief.rawText);
   setBusy(true, "搜索中");
-  setNotice("正在生成 X 全站搜索并跳转...");
+  setNotice(`正在生成 ${platformLabel(state.platform)} 全站搜索并跳转...`);
 
   const response = await chrome.runtime.sendMessage({
     type: "SEARCH_CREATORS",
-    payload: { brief }
+    payload: { brief, platform: state.platform }
   });
 
   setBusy(false);
@@ -132,7 +149,7 @@ async function searchCreators() {
   }
 
   const terms = response.plan?.positiveTerms?.slice(0, 4).join(" / ") || response.plan?.query || "关键词";
-  setNotice(`已跳转 X 用户搜索：${terms}。`, "success");
+  setNotice(`已跳转 ${platformLabel(state.platform)} 用户搜索：${terms}。`, "success");
 }
 
 async function discoverCreators() {
@@ -143,6 +160,7 @@ async function discoverCreators() {
   }
 
   await setMatchBrief(brief);
+  state.platform = normalizePlatform(elements.platformSelect.value, brief.rawText);
   setBusy(true, "匹配中");
   startDiscoveryLoading();
 
@@ -150,7 +168,7 @@ async function discoverCreators() {
     type: "DISCOVER_CREATORS",
     payload: {
       brief,
-      platform: "x",
+      platform: state.platform,
       limit: 20,
       filters: buildDiscoveryFilters()
     }
@@ -165,9 +183,6 @@ async function discoverCreators() {
   }
 
   state.candidates = (response.candidates || []).map(createKol);
-  if (state.candidates.length) {
-    state.saved = await upsertKols(state.candidates);
-  }
 
   render();
   const summary = response.summary || {};
@@ -200,25 +215,67 @@ function buildDiscoveryFilters() {
     minMatchScore: 50,
     minQualityScore: 55,
     minFollowers: Math.max(0, Number(elements.minFollowers?.value || 0) || 0),
+    country: elements.countrySelect?.value || "",
     maxFakeFollowerRisk: "medium"
   };
 }
 
 function startDiscoveryLoading() {
   stopDiscoveryLoading();
+  renderProgressSteps();
+  state.loadingStartedAt = Date.now();
   state.loadingStep = 0;
-  setNotice(DISCOVERY_LOADING_STEPS[state.loadingStep]);
+  elements.progressPanel.hidden = false;
+  updateDiscoveryProgress();
   state.loadingTimer = setInterval(() => {
-    state.loadingStep = Math.min(state.loadingStep + 1, DISCOVERY_LOADING_STEPS.length - 1);
-    const suffix = state.loadingStep >= 1 ? "AI 搜索通常需要 1-3 分钟，请保持弹窗打开。" : "";
-    setNotice([DISCOVERY_LOADING_STEPS[state.loadingStep], suffix].filter(Boolean).join(" "));
-  }, 12_000);
+    updateDiscoveryProgress();
+  }, 1_000);
 }
 
 function stopDiscoveryLoading() {
-  if (!state.loadingTimer) return;
-  clearInterval(state.loadingTimer);
-  state.loadingTimer = null;
+  if (state.loadingTimer) {
+    clearInterval(state.loadingTimer);
+    state.loadingTimer = null;
+  }
+  elements.progressPanel.hidden = true;
+  state.loadingStartedAt = 0;
+}
+
+function updateDiscoveryProgress() {
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - state.loadingStartedAt) / 1000));
+  state.loadingStep = calculateLoadingStep(elapsedSeconds);
+  const percent = Math.min(96, 8 + state.loadingStep * 18 + (elapsedSeconds % 12) * 1.5);
+  const stepText = DISCOVERY_LOADING_STEPS[state.loadingStep];
+
+  elements.progressTitle.textContent = stepText;
+  elements.progressMeta.textContent = `${state.loadingStep + 1}/${DISCOVERY_LOADING_STEPS.length} · ${elapsedSeconds} 秒`;
+  elements.progressBar.style.width = `${percent}%`;
+  setNotice(`${stepText} 请保持弹窗打开，AI 慢时会自动使用规则兜底。`);
+  updateProgressStepStates();
+}
+
+function calculateLoadingStep(elapsedSeconds) {
+  if (elapsedSeconds < 4) return 0;
+  if (elapsedSeconds < 14) return 1;
+  if (elapsedSeconds < 28) return 2;
+  if (elapsedSeconds < 42) return 3;
+  return 4;
+}
+
+function renderProgressSteps() {
+  elements.progressSteps.innerHTML = "";
+  for (const step of DISCOVERY_LOADING_STEPS) {
+    const item = document.createElement("li");
+    item.textContent = step.replace(/\.\.\.$/, "");
+    elements.progressSteps.appendChild(item);
+  }
+}
+
+function updateProgressStepStates() {
+  [...elements.progressSteps.children].forEach((item, index) => {
+    item.classList.toggle("done", index < state.loadingStep);
+    item.classList.toggle("active", index === state.loadingStep);
+  });
 }
 
 async function saveAllCandidates() {
@@ -240,9 +297,13 @@ async function refreshSaved() {
 async function hydrateBrief() {
   const brief = await getMatchBrief();
   if (brief?.rawText) elements.matchBrief.value = brief.rawText;
+  state.platform = normalizePlatform(elements.platformSelect.value, elements.matchBrief.value);
+  state.country = elements.countrySelect?.value || "";
 }
 
 function render() {
+  elements.platformSelect.value = state.platform || "x";
+  if (elements.countrySelect) elements.countrySelect.value = state.country || "";
   elements.savedCount.textContent = state.saved.length;
   elements.candidateCount.textContent = state.candidates.length;
   elements.avgScore.textContent = averageScore(state.saved);
@@ -283,6 +344,7 @@ function renderCard(kol, options) {
   fragment.querySelector(".discovery").textContent = buildDiscovery(kol);
   fragment.querySelector(".match").textContent = buildMatch(kol);
   fragment.querySelector(".bio").textContent = buildBioText(kol);
+  fragment.querySelector(".match-reasons").textContent = buildMatchReasonText(kol);
   profileLink.href = kol.profileUrl || "#";
   profileLink.textContent = kol.profileUrl ? "跳转主页" : "";
   profileLink.hidden = !kol.profileUrl;
@@ -374,10 +436,42 @@ function buildMeta(kol) {
 }
 
 function buildBioText(kol) {
-  if (kol.bio) return kol.bio;
-  const evidence = kol.discovery?.evidenceText || "";
-  if (evidence) return evidence.slice(0, 220);
-  return "简介未知";
+  const bio = cleanProfileBio(kol.bio);
+  return bio ? `简介：${bio}` : "简介：暂无公开简介";
+}
+
+function cleanProfileBio(text) {
+  const bio = String(text || "").trim();
+  if (!bio || isBoilerplateProfileText(bio)) return "";
+  return bio;
+}
+
+function buildMatchReasonText(kol) {
+  const reasons = Array.isArray(kol.match?.reasons) ? kol.match.reasons.filter(Boolean) : [];
+  const matchedKeywords = Array.isArray(kol.match?.matchedKeywords)
+    ? kol.match.matchedKeywords.filter(Boolean)
+    : [];
+  const concerns = Array.isArray(kol.match?.concerns) ? kol.match.concerns.filter(Boolean) : [];
+  const parts = [];
+
+  if (reasons.length) {
+    parts.push(reasons.slice(0, 3).join("；"));
+  } else if (matchedKeywords.length) {
+    parts.push(`命中关键词：${matchedKeywords.slice(0, 5).join("、")}`);
+  }
+
+  if (concerns.length) {
+    parts.push(`注意：${concerns.slice(0, 2).join("；")}`);
+  }
+
+  return parts.length ? `匹配理由：${parts.join(" · ")}` : "匹配理由：暂无明确理由";
+}
+
+function isBoilerplateProfileText(text) {
+  return /Browse your favorite items/i.test(text)
+    || /TikTok Shop is now available/i.test(text)
+    || /Visit TikTok to discover more trending creators/i.test(text)
+    || /Skip to content|For You|Following|LIVE|Log in to follow creators/i.test(text);
 }
 
 function findContactEmail(kol) {
@@ -414,10 +508,9 @@ function buildMatch(kol) {
     medium: "中匹配",
     low: "低匹配"
   };
-  const reasons = (kol.match.reasons || []).slice(0, 2).join("；");
   const quality = kol.quality?.score ? `质量 ${kol.quality.score}` : "";
   const fakeRisk = kol.quality?.fakeFollowerRisk ? `假粉风险 ${riskLabel(kol.quality.fakeFollowerRisk)}` : "";
-  return [`匹配 ${kol.match.score}`, quality, fakeRisk, levelMap[kol.match.level] || "", reasons]
+  return [`关联度 ${kol.match.score}`, quality, fakeRisk, levelMap[kol.match.level] || ""]
     .filter(Boolean)
     .join(" · ");
 }
@@ -439,6 +532,9 @@ function setNotice(text, type = "") {
 function setBusy(isBusy, label = "扫描中") {
   elements.scanButton.disabled = isBusy;
   elements.matchButton.disabled = isBusy;
+  elements.saveAllButton.disabled = isBusy;
+  elements.exportCsvButton.disabled = isBusy;
+  if (elements.exportJsonButton) elements.exportJsonButton.disabled = isBusy;
   elements.scanButton.textContent = isBusy && label === "扫描中" ? label : "扫描";
   elements.matchButton.textContent = isBusy && label !== "扫描中" ? label : "全站匹配";
 }
@@ -449,4 +545,20 @@ function riskLabel(value) {
     medium: "中",
     high: "高"
   }[value] || value;
+}
+
+function normalizePlatform(value, briefText = "") {
+  const explicit = String(value || "").toLowerCase();
+  if (explicit === "tiktok" || explicit === "x") return explicit;
+
+  const lower = String(briefText || "").toLowerCase();
+  if (/tiktok|tik tok|抖音|短视频|带货视频/.test(lower)) return "tiktok";
+  return "x";
+}
+
+function platformLabel(platform) {
+  return {
+    x: "X",
+    tiktok: "TikTok"
+  }[platform] || platform || "目标平台";
 }

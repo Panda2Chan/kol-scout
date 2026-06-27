@@ -392,6 +392,16 @@ html.kol-lite-page-docked body {
   -webkit-line-clamp: 3;
 }
 
+#kol-lite-panel .kol-match-reasons {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #536072;
+  font-size: 12px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 #kol-lite-panel .kol-tags {
   display: flex;
   flex-wrap: wrap;

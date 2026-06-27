@@ -5,7 +5,7 @@ const PANEL_STORAGE_KEY = "kolLite.sidePanel";
 const DEFAULT_NOTICE = "输入筛选条件后点击找相似博主。结果先进入候选，手动保存后才进入已保存 list。";
 const LOADING_STEPS = [
   "正在理解筛选需求，生成 KOL 搜索策略...",
-  "正在调用 AI Web Search 检索真实 X OP...",
+  "正在检索真实创作者主页...",
   "正在读取公开主页简介、粉丝量、邮箱和头像...",
   "正在过滤假粉、低质量和低匹配账号...",
   "正在按匹配度整理候选列表..."
@@ -14,7 +14,9 @@ const LOADING_STEPS = [
 const state = {
   activeView: "candidates",
   briefText: "",
-  minFollowers: 10000,
+  minFollowers: 0,
+  platform: "x",
+  country: "",
   candidates: [],
   saved: [],
   summary: null,
@@ -22,6 +24,7 @@ const state = {
   noticeType: "",
   busy: false,
   loadingTimer: null,
+  loadingStartedAt: 0,
   loadingStep: 0
 };
 
@@ -30,6 +33,8 @@ const elements = {
   listPanel: document.querySelector("#listPanel"),
   matchBrief: document.querySelector("#matchBrief"),
   minFollowers: document.querySelector("#minFollowers"),
+  platformSelect: document.querySelector("#platformSelect"),
+  countrySelect: document.querySelector("#countrySelect"),
   discoverButton: document.querySelector("#discoverButton"),
   scanButton: document.querySelector("#scanButton"),
   exportCsvButton: document.querySelector("#exportCsvButton"),
@@ -38,6 +43,11 @@ const elements = {
   saveAllButton: document.querySelector("#saveAllButton"),
   clearButton: document.querySelector("#clearButton"),
   notice: document.querySelector("#notice"),
+  progressPanel: document.querySelector("#progressPanel"),
+  progressTitle: document.querySelector("#progressTitle"),
+  progressMeta: document.querySelector("#progressMeta"),
+  progressBar: document.querySelector("#progressBar"),
+  progressSteps: document.querySelector("#progressSteps"),
   cardList: document.querySelector("#cardList"),
   template: document.querySelector("#cardTemplate")
 };
@@ -47,6 +57,8 @@ elements.scanButton.addEventListener("click", scanCurrentPage);
 elements.exportCsvButton.addEventListener("click", () => downloadCsv("kol-lite.csv", state.saved));
 elements.matchBrief.addEventListener("input", handleFormChange);
 elements.minFollowers.addEventListener("input", handleFormChange);
+elements.platformSelect.addEventListener("change", handleFormChange);
+elements.countrySelect.addEventListener("change", handleFormChange);
 elements.candidateTab.addEventListener("click", () => switchView("candidates"));
 elements.savedTab.addEventListener("click", () => switchView("saved"));
 elements.saveAllButton.addEventListener("click", () => saveCandidates(state.candidates));
@@ -64,6 +76,8 @@ async function boot() {
 async function handleFormChange() {
   state.briefText = elements.matchBrief.value;
   state.minFollowers = Math.max(0, Number(elements.minFollowers.value || 0) || 0);
+  state.platform = normalizePlatform(elements.platformSelect.value, state.briefText);
+  state.country = elements.countrySelect.value;
   await persistState();
 }
 
@@ -84,6 +98,8 @@ async function discoverCreators() {
 
   state.briefText = brief.rawText;
   state.minFollowers = Math.max(0, Number(elements.minFollowers.value || 0) || 0);
+  state.platform = normalizePlatform(elements.platformSelect.value, brief.rawText);
+  state.country = elements.countrySelect.value;
   state.activeView = "candidates";
   setBusy(true);
   startLoading();
@@ -92,7 +108,7 @@ async function discoverCreators() {
     type: "DISCOVER_CREATORS",
     payload: {
       brief,
-      platform: "x",
+      platform: state.platform,
       limit: 20,
       filters: buildDiscoveryFilters()
     }
@@ -288,6 +304,8 @@ function showContact(creator) {
 function render() {
   elements.matchBrief.value = state.briefText || "";
   elements.minFollowers.value = state.minFollowers || "";
+  elements.platformSelect.value = state.platform || "x";
+  elements.countrySelect.value = state.country || "";
   elements.discoverButton.disabled = state.busy;
   elements.scanButton.disabled = state.busy;
 
@@ -340,6 +358,7 @@ function renderCard(creator) {
   fragment.querySelector(".meta").textContent = buildMeta(creator);
   fragment.querySelector(".score").textContent = `${creator.score ?? creator.match?.score ?? 0} 分`;
   fragment.querySelector(".bio").textContent = buildBioText(creator);
+  fragment.querySelector(".match-reasons").textContent = buildMatchReasonText(creator);
 
   const chips = fragment.querySelector(".chips");
   for (const text of buildChips(creator).slice(0, 5)) {
@@ -364,18 +383,60 @@ function setBusy(busy) {
 
 function startLoading() {
   stopLoading();
+  renderProgressSteps();
+  state.loadingStartedAt = Date.now();
   state.loadingStep = 0;
-  setNotice(LOADING_STEPS[state.loadingStep]);
+  elements.progressPanel.hidden = false;
+  updateLoadingProgress();
   state.loadingTimer = window.setInterval(() => {
-    state.loadingStep = Math.min(state.loadingStep + 1, LOADING_STEPS.length - 1);
-    setNotice(`${LOADING_STEPS[state.loadingStep]} AI 全站搜索通常需要 1-3 分钟。`);
-  }, 12_000);
+    updateLoadingProgress();
+  }, 1_000);
 }
 
 function stopLoading() {
-  if (!state.loadingTimer) return;
-  window.clearInterval(state.loadingTimer);
-  state.loadingTimer = null;
+  if (state.loadingTimer) {
+    window.clearInterval(state.loadingTimer);
+    state.loadingTimer = null;
+  }
+  elements.progressPanel.hidden = true;
+  state.loadingStartedAt = 0;
+}
+
+function updateLoadingProgress() {
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - state.loadingStartedAt) / 1000));
+  state.loadingStep = calculateLoadingStep(elapsedSeconds);
+  const percent = Math.min(96, 8 + state.loadingStep * 18 + (elapsedSeconds % 12) * 1.5);
+  const stepText = LOADING_STEPS[state.loadingStep];
+
+  elements.progressTitle.textContent = stepText;
+  elements.progressMeta.textContent = `第 ${state.loadingStep + 1}/${LOADING_STEPS.length} 步 · 已等待 ${elapsedSeconds} 秒`;
+  elements.progressBar.style.width = `${percent}%`;
+  setNotice(`${stepText} 请保持侧边栏打开，长任务会自动降级兜底。`);
+  updateProgressStepStates();
+}
+
+function calculateLoadingStep(elapsedSeconds) {
+  if (elapsedSeconds < 4) return 0;
+  if (elapsedSeconds < 14) return 1;
+  if (elapsedSeconds < 28) return 2;
+  if (elapsedSeconds < 42) return 3;
+  return 4;
+}
+
+function renderProgressSteps() {
+  elements.progressSteps.innerHTML = "";
+  for (const step of LOADING_STEPS) {
+    const item = document.createElement("li");
+    item.textContent = step.replace(/\.\.\.$/, "");
+    elements.progressSteps.appendChild(item);
+  }
+}
+
+function updateProgressStepStates() {
+  [...elements.progressSteps.children].forEach((item, index) => {
+    item.classList.toggle("done", index < state.loadingStep);
+    item.classList.toggle("active", index === state.loadingStep);
+  });
 }
 
 function setNotice(text, type = "") {
@@ -390,7 +451,9 @@ async function loadState() {
   const saved = data[PANEL_STORAGE_KEY] || {};
   state.activeView = saved.activeView === "saved" ? "saved" : "candidates";
   state.briefText = saved.briefText || "";
-  state.minFollowers = saved.minFollowers ?? 10000;
+  state.minFollowers = saved.minFollowers ?? 0;
+  state.platform = normalizePlatform(saved.platform || "x", state.briefText);
+  state.country = saved.country || "";
   state.candidates = Array.isArray(saved.candidates) ? saved.candidates : [];
   state.summary = saved.summary || null;
   state.notice = saved.notice || DEFAULT_NOTICE;
@@ -403,6 +466,8 @@ async function persistState() {
       activeView: state.activeView,
       briefText: state.briefText,
       minFollowers: state.minFollowers,
+      platform: state.platform,
+      country: state.country,
       candidates: state.candidates,
       summary: state.summary,
       notice: state.notice,
@@ -417,6 +482,7 @@ function buildDiscoveryFilters() {
     minMatchScore: 50,
     minQualityScore: 55,
     minFollowers: Math.max(0, Number(elements.minFollowers.value || 0) || 0),
+    country: elements.countrySelect.value || "",
     maxFakeFollowerRisk: "medium"
   };
 }
@@ -426,22 +492,55 @@ function getVisibleCreators() {
 }
 
 function buildMeta(creator) {
+  const platform = platformLabel(creator.platform);
   const followers = creator.metrics?.followers ? `${formatNumber(creator.metrics.followers)} 粉丝` : "粉丝未知";
   const email = findContactEmail(creator) ? "有邮箱" : "邮箱未知";
-  return [creator.handle, followers, email, riskLabel(creator.quality?.fakeFollowerRisk)].filter(Boolean).join(" · ");
+  return [platform, creator.handle, followers, email, riskLabel(creator.quality?.fakeFollowerRisk)].filter(Boolean).join(" · ");
 }
 
 function buildBioText(creator) {
-  if (creator.bio) return creator.bio;
-  if (creator.discovery?.evidenceText) return creator.discovery.evidenceText.slice(0, 220);
-  return "简介未知";
+  const bio = cleanProfileBio(creator.bio);
+  return bio ? `简介：${bio}` : "简介：暂无公开简介";
+}
+
+function cleanProfileBio(text) {
+  const bio = String(text || "").trim();
+  if (!bio || isBoilerplateProfileText(bio)) return "";
+  return bio;
+}
+
+function buildMatchReasonText(creator) {
+  const reasons = Array.isArray(creator.match?.reasons) ? creator.match.reasons.filter(Boolean) : [];
+  const matchedKeywords = Array.isArray(creator.match?.matchedKeywords)
+    ? creator.match.matchedKeywords.filter(Boolean)
+    : [];
+  const concerns = Array.isArray(creator.match?.concerns) ? creator.match.concerns.filter(Boolean) : [];
+  const parts = [];
+
+  if (reasons.length) {
+    parts.push(reasons.slice(0, 3).join("；"));
+  } else if (matchedKeywords.length) {
+    parts.push(`命中关键词：${matchedKeywords.slice(0, 5).join("、")}`);
+  }
+
+  if (concerns.length) {
+    parts.push(`注意：${concerns.slice(0, 2).join("；")}`);
+  }
+
+  return parts.length ? `匹配理由：${parts.join(" · ")}` : "匹配理由：暂无明确理由";
+}
+
+function isBoilerplateProfileText(text) {
+  return /Browse your favorite items/i.test(text)
+    || /TikTok Shop is now available/i.test(text)
+    || /Visit TikTok to discover more trending creators/i.test(text)
+    || /Skip to content|For You|Following|LIVE|Log in to follow creators/i.test(text);
 }
 
 function buildChips(creator) {
   return [
-    creator.match?.level ? `匹配 ${creator.match.level}` : "",
+    creator.match?.score != null ? `关联度 ${creator.match.score}` : "",
     creator.quality?.score ? `质量 ${creator.quality.score}` : "",
-    ...(creator.match?.reasons || []),
     ...(creator.tags || [])
   ].filter(Boolean);
 }
@@ -475,6 +574,22 @@ function formatFilteredReasons(reasons = {}) {
 function riskLabel(risk = "") {
   const map = { low: "低风险", medium: "中风险", high: "高风险" };
   return map[risk] || "";
+}
+
+function normalizePlatform(value, briefText = "") {
+  const explicit = String(value || "").toLowerCase();
+  if (explicit === "tiktok" || explicit === "x") return explicit;
+
+  const lower = String(briefText || "").toLowerCase();
+  if (/tiktok|tik tok|抖音|短视频|带货视频/.test(lower)) return "tiktok";
+  return "x";
+}
+
+function platformLabel(platform) {
+  return {
+    x: "X",
+    tiktok: "TikTok"
+  }[platform] || platform || "";
 }
 
 function getInitials(creator) {

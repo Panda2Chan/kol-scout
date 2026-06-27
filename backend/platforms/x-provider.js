@@ -28,8 +28,8 @@ export const xProvider = {
     return discoverCreatorsFromYahooSearch(plan, options);
   },
 
-  async enrich(creator) {
-    const publicProfile = await enrichFromPublicProfile(creator);
+  async enrich(creator, options = {}) {
+    const publicProfile = await enrichFromPublicProfile(creator, options.signal);
     const inferredBio = publicProfile.bio || inferBioFromEvidence(publicProfile);
     const inferredFollowers = publicProfile.metrics?.followers ?? inferFollowersFromEvidence(publicProfile);
 
@@ -65,7 +65,8 @@ async function discoverCreatorsFromHttp(plan, options) {
       excludeKeywords: plan.negativeTerms,
       filters: options.filters || {},
       limit: options.limit || 50
-    })
+    }),
+    signal: options.signal
   });
 
   if (!response.ok) {
@@ -97,10 +98,10 @@ async function discoverCreatorsFromYahooSearch(plan, options = {}) {
 
   for (const query of buildYahooQueries(plan).slice(0, maxQueries)) {
     try {
-      const html = await fetchYahooSearch(query);
+      const html = await fetchYahooSearch(query, options.signal);
       let creators = parseYahooCreators(html, query, plan);
       if (!creators.length) {
-        const markdown = await fetchYahooSearchMarkdown(query).catch((error) => {
+        const markdown = await fetchYahooSearchMarkdown(query, options.signal).catch((error) => {
           errors.push(`jina-empty-fallback:${error.message}`);
           return "";
         });
@@ -120,7 +121,7 @@ async function discoverCreatorsFromYahooSearch(plan, options = {}) {
   }
 
   const creators = [...found.values()].slice(0, limit);
-  return enrichSearchCandidates(creators, Math.min(creators.length, 20));
+  return enrichSearchCandidates(creators, Math.min(creators.length, 20), options.signal);
 }
 
 function buildDirectProfileCandidates(plan) {
@@ -222,7 +223,7 @@ function extractChineseSearchTerms(text) {
   return unique(terms);
 }
 
-async function fetchYahooSearch(query) {
+async function fetchYahooSearch(query, signal) {
   const errors = [];
 
   for (const host of YAHOO_SEARCH_HOSTS) {
@@ -235,7 +236,7 @@ async function fetchYahooSearch(query) {
           "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
           Accept: "text/html"
         },
-        signal: AbortSignal.timeout(8000)
+        signal: createTimeoutSignal(8000, signal)
       });
 
       const html = await response.text();
@@ -246,7 +247,7 @@ async function fetchYahooSearch(query) {
     }
   }
 
-  const markdown = await fetchYahooSearchMarkdown(query).catch((error) => {
+  const markdown = await fetchYahooSearchMarkdown(query, signal).catch((error) => {
     errors.push(`jina-yahoo:${error.message}`);
     return "";
   });
@@ -310,7 +311,7 @@ function extractYahooResults(html) {
   return [...byUrl.values()];
 }
 
-async function fetchYahooSearchMarkdown(query) {
+async function fetchYahooSearchMarkdown(query, signal) {
   const yahooUrl = `http://search.yahoo.com/search?p=${encodeURIComponent(query)}`;
   const url = `https://r.jina.ai/${yahooUrl}`;
   const response = await fetch(url, {
@@ -318,7 +319,7 @@ async function fetchYahooSearchMarkdown(query) {
       "User-Agent": "Mozilla/5.0",
       Accept: "text/plain"
     },
-    signal: AbortSignal.timeout(10000)
+    signal: createTimeoutSignal(10000, signal)
   });
 
   const text = await response.text();
@@ -502,11 +503,11 @@ function mergeDiscoveredCreator(found, creator) {
   });
 }
 
-async function enrichSearchCandidates(creators, maxEnrichCount) {
+async function enrichSearchCandidates(creators, maxEnrichCount, signal) {
   const enriched = [];
   for (const creator of creators) {
     if (enriched.length < maxEnrichCount) {
-      enriched.push(await enrichFromPublicProfile(creator));
+      enriched.push(await enrichFromPublicProfile(creator, signal));
       continue;
     }
     enriched.push(creator);
@@ -514,7 +515,7 @@ async function enrichSearchCandidates(creators, maxEnrichCount) {
   return enriched;
 }
 
-async function enrichFromPublicProfile(creator) {
+async function enrichFromPublicProfile(creator, signal) {
   if (!creator.profileUrl) return creator;
 
   try {
@@ -524,7 +525,7 @@ async function enrichFromPublicProfile(creator) {
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
       },
-      signal: AbortSignal.timeout(5000)
+      signal: createTimeoutSignal(5000, signal)
     });
 
     if (!response.ok) return creator;
@@ -717,6 +718,21 @@ function escapeRegExp(value) {
 
 function unique(values) {
   return [...new Set(values.filter(Boolean).map((value) => String(value).trim()).filter(Boolean))];
+}
+
+function createTimeoutSignal(timeoutMs, parentSignal) {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  if (!parentSignal) return timeoutSignal;
+  if (parentSignal.aborted) return parentSignal;
+  if (AbortSignal.any) return AbortSignal.any([parentSignal, timeoutSignal]);
+
+  const controller = new AbortController();
+  const abort = () => {
+    controller.abort(parentSignal.aborted ? parentSignal.reason : timeoutSignal.reason);
+  };
+  parentSignal.addEventListener("abort", abort, { once: true });
+  timeoutSignal.addEventListener("abort", abort, { once: true });
+  return controller.signal;
 }
 
 function inferBioFromEvidence(creator) {

@@ -430,6 +430,10 @@
     bio.className = "kol-bio";
     bio.textContent = buildBioText(creator);
 
+    const matchReasons = document.createElement("div");
+    matchReasons.className = "kol-match-reasons";
+    matchReasons.textContent = buildMatchReasonText(creator);
+
     const tags = document.createElement("div");
     tags.className = "kol-tags";
     for (const text of buildChips(creator).slice(0, 5)) {
@@ -449,7 +453,7 @@
         : buildActionButton("save", "保存", false)
     );
 
-    card.append(head, bio, tags, actions);
+    card.append(head, bio, matchReasons, tags, actions);
     return card;
   }
 
@@ -601,16 +605,48 @@
   }
 
   function buildBioText(creator) {
-    if (creator.bio) return creator.bio;
-    if (creator.discovery?.evidenceText) return creator.discovery.evidenceText.slice(0, 220);
-    return "简介未知";
+    const bio = cleanProfileBio(creator.bio);
+    return bio ? `简介：${bio}` : "简介：暂无公开简介";
+  }
+
+  function cleanProfileBio(text) {
+    const bio = String(text || "").trim();
+    if (!bio || isBoilerplateProfileText(bio)) return "";
+    return bio;
+  }
+
+  function buildMatchReasonText(creator) {
+    const reasons = Array.isArray(creator.match?.reasons) ? creator.match.reasons.filter(Boolean) : [];
+    const matchedKeywords = Array.isArray(creator.match?.matchedKeywords)
+      ? creator.match.matchedKeywords.filter(Boolean)
+      : [];
+    const concerns = Array.isArray(creator.match?.concerns) ? creator.match.concerns.filter(Boolean) : [];
+    const parts = [];
+
+    if (reasons.length) {
+      parts.push(reasons.slice(0, 3).join("；"));
+    } else if (matchedKeywords.length) {
+      parts.push(`命中关键词：${matchedKeywords.slice(0, 5).join("、")}`);
+    }
+
+    if (concerns.length) {
+      parts.push(`注意：${concerns.slice(0, 2).join("；")}`);
+    }
+
+    return parts.length ? `匹配理由：${parts.join(" · ")}` : "匹配理由：暂无明确理由";
+  }
+
+  function isBoilerplateProfileText(text) {
+    return /Browse your favorite items/i.test(text)
+      || /TikTok Shop is now available/i.test(text)
+      || /Visit TikTok to discover more trending creators/i.test(text)
+      || /Skip to content|For You|Following|LIVE|Log in to follow creators/i.test(text);
   }
 
   function buildChips(creator) {
     return [
-      creator.match?.level ? `匹配 ${creator.match.level}` : "",
+      creator.match?.score != null ? `关联度 ${creator.match.score}` : "",
       creator.quality?.score ? `质量 ${creator.quality.score}` : "",
-      ...(creator.match?.reasons || []),
       ...(creator.tags || [])
     ].filter(Boolean);
   }

@@ -9,6 +9,7 @@ const DEFAULT_FILTERS = {
 };
 
 const RISK_RANK = { low: 1, medium: 2, high: 3 };
+const DISCOVERY_TOTAL_TIMEOUT_MS = 5 * 60 * 1000;
 
 export class DiscoveryEmptyError extends Error {
   constructor(message) {
@@ -19,7 +20,25 @@ export class DiscoveryEmptyError extends Error {
   }
 }
 
+export class DiscoveryTimeoutError extends Error {
+  constructor(timeoutMs = DISCOVERY_TOTAL_TIMEOUT_MS) {
+    const timeoutSeconds = Math.ceil(Number(timeoutMs || DISCOVERY_TOTAL_TIMEOUT_MS) / 1000);
+    const message = timeoutSeconds >= 60 && timeoutSeconds % 60 === 0
+      ? `全站匹配超过 ${timeoutSeconds / 60} 分钟，请缩小筛选条件后重试。`
+      : `全站匹配超过 ${timeoutSeconds} 秒，请缩小筛选条件后重试。`;
+    super(message);
+    this.name = "DiscoveryTimeoutError";
+    this.statusCode = 504;
+    this.code = "DISCOVERY_TIMEOUT";
+  }
+}
+
 export async function discoverCreators(briefInput = {}, registry, options = {}) {
+  const totalTimeoutMs = readTimeoutMs(options.timeoutMs || process.env.DISCOVERY_TOTAL_TIMEOUT_MS, DISCOVERY_TOTAL_TIMEOUT_MS);
+  const totalSignal = createTimeoutSignal(
+    totalTimeoutMs,
+    options.signal
+  );
   const brief = normalizeBrief(briefInput);
   const platform = normalizePlatform(options.platform || brief.platforms[0] || "x");
   const provider = registry.get(platform);
@@ -29,33 +48,45 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
   }
 
   const limit = clamp(Number(options.limit || 20), 1, 50);
-  const filters = normalizeFilters(options.filters || {});
+  const filters = normalizeFilters(options.filters || {}, brief);
   const fallbackPlan = buildCreatorSearchPlan(brief, { platform, locale: options.locale || "zh-CN" });
-  const plan = await buildAiCreatorSearchPlan(brief, fallbackPlan, {
-    platform,
-    locale: options.locale || "zh-CN",
-    filters
-  });
+  const plan = platform === "x"
+    ? await runWithAbort(buildAiCreatorSearchPlan(brief, fallbackPlan, {
+      platform,
+      locale: options.locale || "zh-CN",
+      filters,
+      requireAi: false,
+      signal: totalSignal
+    }), totalSignal, totalTimeoutMs)
+    : {
+      ...fallbackPlan,
+      aiSearch: {
+        enabled: false,
+        reason: "当前 AI 搜索规划仅用于 X，TikTok 使用规则搜索计划"
+      }
+    };
   const discoveryOptions = {
-    limit: Math.max(limit * 3, 24),
+    limit: platform === "tiktok" ? Math.min(Math.max(limit * 2, 10), 15) : Math.max(limit * 3, 24),
     filters,
-    locale: options.locale || "zh-CN"
+    locale: options.locale || "zh-CN",
+    signal: totalSignal
   };
   let aiWebSearch = null;
   let dataSource = provider.sourceName || "unknown";
   let fetched = [];
 
-  if (platform === "x" && process.env.AI_WEB_SEARCH_DISABLED !== "true") {
+  if (platform === "x" && plan.aiSearch?.enabled && process.env.AI_WEB_SEARCH_DISABLED !== "true") {
     try {
-      aiWebSearch = await discoverCreatorsWithAiWebSearch(brief, plan, {
+      aiWebSearch = await runWithAbort(discoverCreatorsWithAiWebSearch(brief, plan, {
         ...discoveryOptions,
         platform,
         limit: Math.min(Math.max(limit, 8), 20)
-      });
+      }), totalSignal, totalTimeoutMs);
       fetched = aiWebSearch.creators;
-      fetched = await enrichAiWebSearchCreators(fetched, provider, 20);
+      fetched = await runWithAbort(enrichAiWebSearchCreators(fetched, provider, 20, totalSignal), totalSignal, totalTimeoutMs);
       dataSource = "ai-web-search";
     } catch (error) {
+      if (totalSignal.aborted) throw new DiscoveryTimeoutError(totalTimeoutMs);
       aiWebSearch = {
         enabled: false,
         error: error.message,
@@ -65,7 +96,14 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
   }
 
   if (!fetched.length) {
-    fetched = await provider.discoverCreators(plan, discoveryOptions);
+    throwIfAborted(totalSignal, totalTimeoutMs);
+    try {
+      fetched = await runWithAbort(provider.discoverCreators(plan, discoveryOptions), totalSignal, totalTimeoutMs);
+    } catch (error) {
+      if (totalSignal.aborted || isTimeoutError(error)) throw new DiscoveryTimeoutError(totalTimeoutMs);
+      throw error;
+    }
+    throwIfAborted(totalSignal, totalTimeoutMs);
     dataSource = aiWebSearch?.fallback ? `${provider.sourceName || "unknown"}-fallback` : provider.sourceName || "unknown";
   }
 
@@ -96,6 +134,7 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
           ...(baseMatch.dimensions || {}),
           baseMatch: baseMatch.score || 0,
           quality: quality.score,
+          sourceRelevance: creator.relevanceScore ?? creator.discovery?.relevanceScore ?? null,
           fakeFollowerRisk: quality.fakeFollowerRisk
         }
       },
@@ -151,7 +190,49 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
   };
 }
 
-async function enrichAiWebSearchCreators(creators, provider, maxEnrichCount) {
+function readTimeoutMs(value, fallback) {
+  const timeoutMs = Number(value || fallback);
+  return Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : fallback;
+}
+
+function createTimeoutSignal(timeoutMs, parentSignal) {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  if (!parentSignal) return timeoutSignal;
+  if (parentSignal.aborted) return parentSignal;
+  if (AbortSignal.any) return AbortSignal.any([parentSignal, timeoutSignal]);
+
+  const controller = new AbortController();
+  const abort = () => {
+    controller.abort(parentSignal.aborted ? parentSignal.reason : timeoutSignal.reason);
+  };
+  parentSignal.addEventListener("abort", abort, { once: true });
+  timeoutSignal.addEventListener("abort", abort, { once: true });
+  return controller.signal;
+}
+
+function throwIfAborted(signal, timeoutMs) {
+  if (!signal?.aborted) return;
+  throw new DiscoveryTimeoutError(timeoutMs);
+}
+
+function runWithAbort(promise, signal, timeoutMs) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(new DiscoveryTimeoutError(timeoutMs));
+
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      signal.addEventListener("abort", () => reject(new DiscoveryTimeoutError(timeoutMs)), { once: true });
+    })
+  ]);
+}
+
+function isTimeoutError(error) {
+  const message = String(error?.message || error || "");
+  return error?.name === "TimeoutError" || error?.name === "AbortError" || /aborted|timeout/i.test(message);
+}
+
+async function enrichAiWebSearchCreators(creators, provider, maxEnrichCount, signal) {
   if (!provider?.enrich || !Array.isArray(creators) || !creators.length) return creators;
 
   const enriched = [];
@@ -161,7 +242,7 @@ async function enrichAiWebSearchCreators(creators, provider, maxEnrichCount) {
       continue;
     }
 
-    enriched.push(await provider.enrich(creator));
+    enriched.push(await runWithAbort(provider.enrich(creator, { signal }), signal));
   }
   return enriched;
 }
@@ -297,9 +378,9 @@ function normalizeDiscoveredCreator(input, platform) {
     platform,
     name: input.name || handle || "Unknown creator",
     handle,
-    profileUrl: input.profileUrl || (rawHandle ? `https://x.com/${rawHandle}` : ""),
+    profileUrl: input.profileUrl || buildProfileUrl(platform, rawHandle),
     avatarUrl: input.avatarUrl || "",
-    bio: input.bio || "",
+    bio: cleanCreatorBio(input.bio),
     contact: {
       email: input.contact?.email || "",
       source: input.contact?.source || "",
@@ -312,13 +393,15 @@ function normalizeDiscoveredCreator(input, platform) {
       posts: input.metrics?.posts ?? null,
       avgEngagement: input.metrics?.avgEngagement ?? input.metrics?.averageEngagement ?? null
     },
+    relevanceScore: input.relevanceScore ?? input.discovery?.relevanceScore ?? null,
     tags: input.tags || [],
     discovery: {
       kind: input.discovery?.kind || "third-party-search",
       confidence: input.discovery?.confidence ?? 86,
       summary: input.discovery?.summary || "来自全站数据源的候选，已做匹配和质量初筛。",
-      evidenceText: input.discovery?.evidenceText || [input.bio, ...(input.tags || [])].filter(Boolean).join(" "),
+      evidenceText: cleanEvidenceText(input.discovery?.evidenceText || [input.bio, ...(input.tags || [])].filter(Boolean).join(" ")),
       needsEnrichment: Boolean(input.discovery?.needsEnrichment),
+      relevanceScore: input.discovery?.relevanceScore ?? input.relevanceScore ?? null,
       sourceProvider: input.discovery?.sourceProvider || input.sourceProvider || "third-party"
     },
     enrichment: {
@@ -333,6 +416,26 @@ function normalizeDiscoveredCreator(input, platform) {
       capturedAt: Date.now()
     }
   };
+}
+
+function cleanCreatorBio(value) {
+  const text = String(value || "").trim();
+  return isBoilerplateProfileText(text) ? "" : text;
+}
+
+function cleanEvidenceText(value) {
+  return String(value || "")
+    .split(/\r?\n|;\s*/)
+    .map((line) => line.trim())
+    .filter((line) => line && !isBoilerplateProfileText(line))
+    .join("\n");
+}
+
+function isBoilerplateProfileText(text) {
+  return /Browse your favorite items/i.test(text)
+    || /TikTok Shop is now available/i.test(text)
+    || /Visit TikTok to discover more trending creators/i.test(text)
+    || /Skip to content|For You|Following|LIVE|Log in to follow creators/i.test(text);
 }
 
 function calculateFinalScore(matchScore, quality) {
@@ -355,13 +458,26 @@ function getFilteredReason(creator, filters) {
   if (creator.quality?.concerns?.some((concern) => concern.includes("无法验证创作者身份"))) return "信息不足";
   if (creator.quality?.concerns?.some((concern) => concern.includes("标题解析异常"))) return "信息不足";
   if (creator.discovery?.kind === "web-search" && !(creator.tags || []).length) return "低匹配度";
-  if (filters.minFollowers && Number(creator.metrics?.followers || 0) < filters.minFollowers) return "粉丝数不足";
-  if ((creator.match?.score || 0) < filters.minMatchScore) return "低匹配度";
+  if (filters.minFollowers && creator.metrics?.followers == null) {
+    return "粉丝数未知";
+  }
+  if (filters.minFollowers && creator.metrics?.followers != null && Number(creator.metrics.followers) < filters.minFollowers) {
+    return "粉丝数不足";
+  }
+  if ((creator.match?.score || 0) < filters.minMatchScore && !hasPlatformSearchEvidence(creator, filters.minMatchScore)) {
+    return "低匹配度";
+  }
   if ((creator.quality?.score || 0) < filters.minQualityScore) return "低质量";
   if (RISK_RANK[creator.quality?.fakeFollowerRisk || "high"] > RISK_RANK[filters.maxFakeFollowerRisk]) {
     return "疑似假粉或异常互动";
   }
   return "";
+}
+
+function hasPlatformSearchEvidence(creator, minMatchScore) {
+  if (creator.platform !== "tiktok" || creator.discovery?.kind !== "web-search") return false;
+  if ((creator.tags || []).length < 2) return false;
+  return (creator.match?.dimensions?.baseMatch || creator.match?.score || 0) >= Math.max(45, minMatchScore - 8);
 }
 
 function isLikelyBrandAccount(creator, haystack) {
@@ -386,11 +502,13 @@ function isLikelyBrandAccount(creator, haystack) {
     || /(?:官方旗舰店|官方店铺|品牌官方)/.test(haystack);
 }
 
-function normalizeFilters(filters) {
+function normalizeFilters(filters, brief = {}) {
+  const briefMinFollowers = brief.followerRange?.min || 0;
+  const minFollowers = filters.minFollowers || filters.minFollowerCount || briefMinFollowers || DEFAULT_FILTERS.minFollowers;
   return {
     ...DEFAULT_FILTERS,
     ...filters,
-    minFollowers: Math.max(0, Number(filters.minFollowers || filters.minFollowerCount || DEFAULT_FILTERS.minFollowers) || 0),
+    minFollowers: Math.max(0, Number(minFollowers) || 0),
     maxFakeFollowerRisk: filters.maxFakeFollowerRisk || DEFAULT_FILTERS.maxFakeFollowerRisk
   };
 }
@@ -427,6 +545,12 @@ function normalizePlatform(platform) {
   return normalized === "twitter" ? "x" : normalized;
 }
 
+function buildProfileUrl(platform, rawHandle) {
+  if (!rawHandle) return "";
+  if (platform === "tiktok") return `https://www.tiktok.com/@${rawHandle}`;
+  return `https://x.com/${rawHandle}`;
+}
+
 function normalizeHandle(handle) {
   if (!handle) return "";
   const raw = String(handle).replace(/^@/, "").trim();
@@ -436,7 +560,10 @@ function normalizeHandle(handle) {
 function extractHandle(profileUrl = "") {
   try {
     const url = new URL(profileUrl);
-    const match = url.pathname.match(/^\/([A-Za-z0-9_]{1,15})(?:\/|$)/);
+    const host = url.hostname.replace(/^www\./, "").toLowerCase();
+    const match = host === "tiktok.com"
+      ? url.pathname.match(/^\/@([A-Za-z0-9._]{2,24})(?:\/|$)/)
+      : url.pathname.match(/^\/([A-Za-z0-9_]{1,15})(?:\/|$)/);
     return match ? `@${match[1]}` : "";
   } catch {
     return "";

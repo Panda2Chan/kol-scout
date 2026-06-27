@@ -1,8 +1,14 @@
 import { createServer } from "node:http";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadLocalEnv } from "./services/env-service.js";
 import { discoverCreators } from "./services/discovery-service.js";
 import { buildCreatorSearchPlan, matchCreators } from "./services/match-service.js";
 import { buildAiCreatorSearchPlan } from "./services/ai-search-service.js";
 import { createPlatformRegistry } from "./platforms/registry.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+loadLocalEnv(resolve(__dirname, "..", ".env"));
 
 const PORT = Number(process.env.PORT || 8787);
 const registry = createPlatformRegistry();
@@ -16,7 +22,16 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
 
     if (req.method === "GET" && url.pathname === "/health") {
-      return sendJson(res, 200, { ok: true, service: "kol-lite-api" });
+      return sendJson(res, 200, {
+        ok: true,
+        service: "kol-lite-api",
+        searchProviders: {
+          tavily: Boolean(process.env.TAVILY_API_KEY),
+          jina: Boolean(process.env.JINA_API_KEY),
+          serper: Boolean(process.env.SERPER_API_KEY),
+          brave: Boolean(process.env.BRAVE_SEARCH_API_KEY)
+        }
+      });
     }
 
     if (req.method === "POST" && url.pathname === "/api/match/creators") {
@@ -56,7 +71,7 @@ const server = createServer(async (req, res) => {
           actions: [
             {
               type: "open_search",
-              label: "打开 X 全站用户搜索",
+              label: `打开 ${platformLabel(plan.platform)} 全站用户搜索`,
               query: plan.query,
               url: provider.buildSearchUrl(plan)
             },
@@ -114,4 +129,11 @@ function sendJson(res, statusCode, payload) {
   }
 
   res.end(JSON.stringify(payload));
+}
+
+function platformLabel(platform) {
+  return {
+    x: "X",
+    tiktok: "TikTok"
+  }[platform] || String(platform || "目标平台");
 }
