@@ -1,7 +1,8 @@
 export const STORAGE_KEYS = {
   KOLS: "kolLite.kols",
   LAST_SCAN: "kolLite.lastScan",
-  MATCH_BRIEF: "kolLite.matchBrief"
+  MATCH_BRIEF: "kolLite.matchBrief",
+  DISCOVERY_FEEDBACK: "kolLite.discoveryFeedback"
 };
 
 export const STATUS_OPTIONS = ["saved", "shortlisted", "contacted", "ignored"];
@@ -73,6 +74,7 @@ export function createKol(input) {
       signals: input.quality?.signals || [],
       concerns: input.quality?.concerns || []
     },
+    aiReview: input.aiReview || null,
     score: input.score ?? scoreKol(input),
     tags: input.tags || [],
     notes: input.notes || "",

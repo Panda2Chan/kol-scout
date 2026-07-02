@@ -39,6 +39,12 @@ const COUNTRY_SEARCH_TERMS = {
   IN: ["India", "Indian"]
 };
 
+const DEFAULT_QUERY_LIMIT = 16;
+const DEFAULT_ENRICH_LIMIT = 40;
+const DEFAULT_SOURCE_CONCURRENCY = 3;
+const DEFAULT_QUERY_CONCURRENCY = 3;
+const DEFAULT_ENRICH_CONCURRENCY = 8;
+
 export const tiktokProvider = {
   platform: "tiktok",
   get sourceName() {
@@ -72,29 +78,53 @@ export const tiktokProvider = {
 };
 
 async function discoverCreatorsFromHttp(plan, options) {
-  const response = await fetch(process.env.KOL_DATA_API_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(process.env.KOL_DATA_API_KEY ? { Authorization: `Bearer ${process.env.KOL_DATA_API_KEY}` } : {})
-    },
-    body: JSON.stringify({
-      platform: "tiktok",
-      query: plan.query,
-      keywords: plan.positiveTerms,
-      excludeKeywords: plan.negativeTerms,
-      filters: options.filters || {},
-      limit: options.limit || 50
-    }),
-    signal: options.signal
+  const startedAt = Date.now();
+  options.logger?.info("tiktok_http.start", {
+    limit: options.limit || 50,
+    hasApiKey: Boolean(process.env.KOL_DATA_API_KEY)
   });
 
+  let response;
+  try {
+    response = await fetch(process.env.KOL_DATA_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(process.env.KOL_DATA_API_KEY ? { Authorization: `Bearer ${process.env.KOL_DATA_API_KEY}` } : {})
+      },
+      body: JSON.stringify({
+        platform: "tiktok",
+        query: plan.query,
+        keywords: plan.positiveTerms,
+        excludeKeywords: plan.negativeTerms,
+        filters: options.filters || {},
+        limit: options.limit || 50
+      }),
+      signal: options.signal
+    });
+  } catch (error) {
+    options.logger?.error("tiktok_http.error", {
+      stageElapsedMs: Date.now() - startedAt,
+      error
+    });
+    throw error;
+  }
+
   if (!response.ok) {
+    options.logger?.error("tiktok_http.error", {
+      stageElapsedMs: Date.now() - startedAt,
+      status: response.status
+    });
     throw new Error(`三方 TikTok 数据源请求失败：${response.status}`);
   }
 
   const payload = await response.json();
   const creators = Array.isArray(payload.creators) ? payload.creators : payload.results || payload.data || [];
+  options.logger?.info("tiktok_http.done", {
+    stageElapsedMs: Date.now() - startedAt,
+    status: response.status,
+    creators: creators.length
+  });
   return creators.map((creator) => ({
     ...creator,
     platform: "tiktok",
@@ -107,6 +137,8 @@ async function discoverCreatorsFromHttp(plan, options) {
 }
 
 async function discoverCreatorsFromFallbackSearch(plan, options = {}) {
+  const startedAt = Date.now();
+  const logger = options.logger || null;
   const limit = options.limit || 50;
   const errors = [];
   const direct = new Map();
@@ -116,47 +148,211 @@ async function discoverCreatorsFromFallbackSearch(plan, options = {}) {
   }
 
   const sources = buildSearchSources();
-  const queries = buildSearchQueries(plan, options.filters || {}).slice(0, 8);
+  const queryLimit = readPositiveInt(process.env.TIKTOK_SEARCH_QUERY_LIMIT, DEFAULT_QUERY_LIMIT);
+  const enrichLimit = readPositiveInt(process.env.TIKTOK_ENRICH_LIMIT, DEFAULT_ENRICH_LIMIT);
+  const sourceConcurrency = readPositiveInt(process.env.TIKTOK_SEARCH_SOURCE_CONCURRENCY, DEFAULT_SOURCE_CONCURRENCY);
+  const queryConcurrency = readPositiveInt(process.env.TIKTOK_SEARCH_QUERY_CONCURRENCY, DEFAULT_QUERY_CONCURRENCY);
+  const queries = buildSearchQueries(plan, options.filters || {}).slice(0, queryLimit);
   const configuredSourceNames = buildConfiguredSearchSourceNames();
+  const found = new Map(direct);
+  const diagnostics = {
+    queryCount: queries.length,
+    queries,
+    configuredSources: configuredSourceNames,
+    sourceConcurrency,
+    queryConcurrency,
+    sources: [],
+    directProfiles: direct.size,
+    rawFetched: direct.size,
+    enriched: 0,
+    errors
+  };
+  logger?.info("tiktok_fallback.start", {
+    limit,
+    queryCount: queries.length,
+    sourceCount: sources.length,
+    configuredSources: configuredSourceNames,
+    sourceConcurrency,
+    queryConcurrency,
+    enrichLimit,
+    directProfiles: direct.size
+  });
 
-  if (!configuredSourceNames.length) {
-    throw new Error("未检测到 Tavily/Jina/Serper/Brave API Key，当前只能使用 Yahoo 兜底。请确认 .env 后重启后端服务。");
-  }
+  let sourceGroupIndex = 0;
+  for (const sourceGroup of chunkArray(sources, sourceConcurrency)) {
+    throwIfAborted(options.signal);
+    const sourceGroupStartedAt = Date.now();
+    logger?.info("tiktok_source_group.start", {
+      groupIndex: sourceGroupIndex,
+      sources: sourceGroup.map((source) => source.name),
+      currentFound: found.size
+    });
+    const results = await Promise.all(sourceGroup.map((source) =>
+      searchSourceForCreators(source, queries, plan, limit, queryConcurrency, options.signal, logger)
+    ));
 
-  for (const source of sources) {
-    const found = new Map(direct);
-
-    for (const query of queries) {
-      try {
-        const pages = await source.search(query, options.signal);
-        const creators = pages.flatMap((page) => parseSearchPage(page, query, plan, source.name));
-        for (const creator of creators) mergeDiscoveredCreator(found, creator);
-      } catch (error) {
-        errors.push(`${source.name}:${error.message}`);
-        break;
+    for (const result of results) {
+      const beforeSourceSize = found.size;
+      for (const creator of result.creators) mergeDiscoveredCreator(found, creator);
+      result.stats.newCandidates = Math.max(0, found.size - beforeSourceSize);
+      if (!result.stats.newCandidates && !result.stats.errors.length) {
+        errors.push(`${result.stats.source}:未返回候选`);
       }
-
-      if (found.size >= limit) break;
+      errors.push(...result.stats.errors);
+      diagnostics.sources.push(result.stats);
     }
 
-    if (found.size > direct.size || (direct.size && source.name === sources[0]?.name)) {
-      const creators = [...found.values()].slice(0, limit);
-      return enrichSearchCandidates(creators, Math.min(creators.length, 20), options.signal);
-    }
+    logger?.info("tiktok_source_group.done", {
+      stageElapsedMs: Date.now() - sourceGroupStartedAt,
+      groupIndex: sourceGroupIndex,
+      found: found.size,
+      sourceStats: results.map((result) => ({
+        source: result.stats.source,
+        queriesTried: result.stats.queriesTried,
+        rawResults: result.stats.rawResults,
+        profileCandidates: result.stats.profileCandidates,
+        parsedCandidates: result.stats.parsedCandidates,
+        candidateFiltered: result.stats.candidateFiltered,
+        negativeFiltered: result.stats.negativeFiltered,
+        newCandidates: result.stats.newCandidates,
+        errors: result.stats.errors.length
+      }))
+    });
+    sourceGroupIndex += 1;
 
-    errors.push(`${source.name}:未返回候选`);
+    if (found.size >= limit) break;
   }
 
-  if (direct.size) {
-    const creators = [...direct.values()].slice(0, limit);
-    return enrichSearchCandidates(creators, Math.min(creators.length, 20), options.signal);
+  if (found.size) {
+    const creators = rankSearchCandidates([...found.values()]).slice(0, limit);
+    diagnostics.rawFetched = found.size;
+    diagnostics.enriched = Math.min(creators.length, enrichLimit);
+    diagnostics.enrichConcurrency = readPositiveInt(process.env.TIKTOK_ENRICH_CONCURRENCY, DEFAULT_ENRICH_CONCURRENCY);
+    logger?.info("tiktok_fallback.raw_done", {
+      stageElapsedMs: Date.now() - startedAt,
+      found: found.size,
+      selected: creators.length,
+      enrichCount: diagnostics.enriched
+    });
+    const enriched = await enrichSearchCandidates(creators, diagnostics.enriched, options.signal, logger);
+    logger?.info("tiktok_fallback.done", {
+      stageElapsedMs: Date.now() - startedAt,
+      returned: enriched.length,
+      rawFetched: diagnostics.rawFetched,
+      enriched: diagnostics.enriched,
+      errors: errors.length
+    });
+    return attachDiscoveryMeta(enriched, diagnostics);
   }
 
   if (errors.length) {
-    throw new Error(`TikTok 公开网页搜索失败：${errors.join(" / ")}`);
+    logger?.warn("tiktok_fallback.empty", {
+      stageElapsedMs: Date.now() - startedAt,
+      errors: errors.length,
+      sourceCount: diagnostics.sources.length,
+      rawResults: sumDiagnosticField(diagnostics, "rawResults"),
+      profileCandidates: sumDiagnosticField(diagnostics, "profileCandidates"),
+      parsedCandidates: sumDiagnosticField(diagnostics, "parsedCandidates"),
+      candidateFiltered: sumDiagnosticField(diagnostics, "candidateFiltered"),
+      negativeFiltered: sumDiagnosticField(diagnostics, "negativeFiltered")
+    });
+    throw createDiscoveryEmptyError(buildFallbackSearchFailureMessage(diagnostics, Date.now() - startedAt, errors));
   }
 
+  logger?.warn("tiktok_fallback.empty", {
+    stageElapsedMs: Date.now() - startedAt,
+    errors: 0,
+    sourceCount: diagnostics.sources.length,
+    rawResults: sumDiagnosticField(diagnostics, "rawResults"),
+    profileCandidates: sumDiagnosticField(diagnostics, "profileCandidates"),
+    parsedCandidates: sumDiagnosticField(diagnostics, "parsedCandidates"),
+    candidateFiltered: sumDiagnosticField(diagnostics, "candidateFiltered"),
+    negativeFiltered: sumDiagnosticField(diagnostics, "negativeFiltered")
+  });
   return [];
+}
+
+async function searchSourceForCreators(source, queries, plan, limit, queryConcurrency, signal, logger) {
+  const startedAt = Date.now();
+  const found = new Map();
+  const stats = {
+    source: source.name,
+    queriesTried: 0,
+    rawResults: 0,
+    profileCandidates: 0,
+    parsedCandidates: 0,
+    candidateFiltered: 0,
+    negativeFiltered: 0,
+    newCandidates: 0,
+    errors: []
+  };
+  logger?.info("tiktok_source.start", {
+    source: source.name,
+    queryCount: queries.length,
+    queryConcurrency
+  });
+
+  let batchIndex = 0;
+  for (const queryGroup of chunkArray(queries, queryConcurrency)) {
+    throwIfAborted(signal);
+    const batchStartedAt = Date.now();
+    const results = await Promise.all(queryGroup.map(async (query) => {
+      try {
+        const pages = await source.search(query, signal);
+        return { ok: true, query, pages };
+      } catch (error) {
+        return { ok: false, query, error };
+      }
+    }));
+
+    for (const result of results) {
+      stats.queriesTried += 1;
+      if (!result.ok) {
+        stats.errors.push(`${source.name}:${result.error.message}`);
+        continue;
+      }
+
+      const creators = result.pages.flatMap((page) => parseSearchPage(page, result.query, plan, source.name, stats));
+      for (const creator of creators) mergeDiscoveredCreator(found, creator);
+    }
+
+    logger?.info("tiktok_query_batch.done", {
+      stageElapsedMs: Date.now() - batchStartedAt,
+      source: source.name,
+      batchIndex,
+      queriesTried: results.length,
+      ok: results.filter((result) => result.ok).length,
+      errors: results.filter((result) => !result.ok).length,
+      rawResults: stats.rawResults,
+      profileCandidates: stats.profileCandidates,
+      parsedCandidates: stats.parsedCandidates,
+      candidateFiltered: stats.candidateFiltered,
+      negativeFiltered: stats.negativeFiltered,
+      uniqueCandidates: found.size,
+      querySamples: shouldLogQueries() ? queryGroup : undefined
+    });
+    batchIndex += 1;
+
+    if (found.size >= limit) break;
+  }
+
+  logger?.info("tiktok_source.done", {
+    stageElapsedMs: Date.now() - startedAt,
+    source: source.name,
+    queriesTried: stats.queriesTried,
+    rawResults: stats.rawResults,
+    profileCandidates: stats.profileCandidates,
+    parsedCandidates: stats.parsedCandidates,
+    candidateFiltered: stats.candidateFiltered,
+    negativeFiltered: stats.negativeFiltered,
+    uniqueCandidates: found.size,
+    errors: stats.errors.length
+  });
+
+  return {
+    creators: [...found.values()],
+    stats
+  };
 }
 
 function buildSearchSources() {
@@ -198,14 +394,21 @@ function buildSearchQueries(plan, filters = {}) {
   const countryTerms = buildCountryTerms(filters.country).slice(0, 3);
   const countryQuery = countryTerms.join(" ");
   const compactTerms = unique([...positiveTerms, ...expandedTerms]).slice(0, 10);
+  const hashtagTerms = buildHashtagTerms(expandedTerms).slice(0, 6);
   const directQuery = [compactTerms.length ? compactTerms.join(" ") : "creator", countryQuery].filter(Boolean).join(" ");
+  const aiQueries = (plan.aiSearch?.queries || [])
+    .slice(0, 8)
+    .map((query) => buildAiSearchQuery(query, countryQuery, negativeTerms))
+    .filter(Boolean);
 
   return unique([
+    ...aiQueries,
     `site:tiktok.com/@ ${directQuery} ${negativeTerms.join(" ")}`,
     `site:www.tiktok.com/@ ${directQuery} ${negativeTerms.join(" ")}`,
     `site:tiktok.com/@ "${directQuery}" ${negativeTerms.join(" ")}`,
     `site:tiktok.com/@ creator ${expandedTerms.slice(0, 6).join(" ")} ${negativeTerms.join(" ")}`,
     `site:tiktok.com/@ influencer ${expandedTerms.slice(0, 6).join(" ")} ${negativeTerms.join(" ")}`,
+    hashtagTerms.length ? `site:tiktok.com/@ ${hashtagTerms.join(" ")} creator ${countryQuery} ${negativeTerms.join(" ")}` : "",
     `site:tiktok.com/@ ${compactTerms.slice(0, 6).join(" ")} email ${negativeTerms.join(" ")}`,
     ...buildTopicQueries(rawText, negativeTerms, countryQuery)
   ])
@@ -394,19 +597,34 @@ async function fetchYahooSearchMarkdown(query, signal) {
   return text;
 }
 
-function parseSearchPage(page, query, plan, sourceProvider) {
+function parseSearchPage(page, query, plan, sourceProvider, stats) {
   const results = typeof page === "string" ? extractYahooResults(page) : normalizeSearchResults(page);
-  return results
-    .map((result) => {
-      const profile = normalizeTikTokProfile(result.url);
-      if (!profile) return null;
-      return buildSearchCandidate(profile, query, plan, result.sourceUrl || result.url, {
-        ...result,
-        sourceProvider
-      });
-    })
-    .filter(Boolean)
-    .filter((creator) => matchesNegativeTerms(creator, plan.negativeTerms || []));
+  stats && (stats.rawResults += results.length);
+
+  const creators = [];
+  for (const result of results) {
+    const profile = normalizeTikTokProfile(result.url);
+    if (!profile) continue;
+    stats && (stats.profileCandidates += 1);
+
+    const creator = buildSearchCandidate(profile, query, plan, result.sourceUrl || result.url, {
+      ...result,
+      sourceProvider
+    });
+    if (!creator) {
+      stats && (stats.candidateFiltered += 1);
+      continue;
+    }
+    if (!matchesNegativeTerms(creator, plan.negativeTerms || [])) {
+      stats && (stats.negativeFiltered += 1);
+      continue;
+    }
+
+    stats && (stats.parsedCandidates += 1);
+    creators.push(creator);
+  }
+
+  return creators;
 }
 
 function normalizeSearchResults(page = {}) {
@@ -496,7 +714,7 @@ function normalizeTikTokProfile(targetUrl) {
   try {
     const url = new URL(decodeHtmlEntities(String(targetUrl || "")));
     const host = url.hostname.replace(/^www\./, "").toLowerCase();
-    if (host !== "tiktok.com") return null;
+    if (host !== "tiktok.com" && host !== "m.tiktok.com") return null;
 
     const pathname = decodeURIComponent(url.pathname);
     const match = pathname.match(/^\/(?:@|%40)\/?([A-Za-z0-9._]{2,24})(?:\/|$)/);
@@ -547,29 +765,28 @@ function buildSearchCandidate(profile, query, plan, sourceUrl, result = {}) {
   const observedText = [result.title, result.snippet, profile.rawHandle].filter(Boolean).join(" ");
   const observedTerms = selectObservedTerms(observedText, terms);
   const queryTerms = selectObservedTerms(queryText, terms);
-  const matchedTerms = unique([...observedTerms, ...queryTerms]);
   const strictTopic = requiresStrictTopic(plan);
   if (strictTopic && !hasStrictTopicEvidence(observedText, profile.rawHandle)) return null;
+  const name = cleanProfileTitle(result.title, profile.rawHandle);
+  const bio = buildSearchResultBio(result.snippet, profile.rawHandle);
 
   const evidenceText = [
     result.title ? `title: ${result.title}` : "",
     result.snippet ? `snippet: ${result.snippet}` : "",
     result.sourceProvider ? `sourceProvider: ${result.sourceProvider}` : "",
-    query !== "direct profile" ? `searchQuery: ${query}` : "",
     `matchedUrl: ${sourceUrl}`,
-    observedTerms.length ? `matchedTerms: ${observedTerms.join(" ")}` : "",
-    queryTerms.length ? `queryTerms: ${queryTerms.join(" ")}` : ""
+    observedTerms.length ? `matchedTerms: ${observedTerms.join(" ")}` : ""
   ].filter(Boolean).join("; ");
   const isDirectProfile = query === "direct profile";
 
   return {
     platform: "tiktok",
-    name: result.title ? cleanProfileTitle(result.title, profile.rawHandle) : profile.rawHandle,
+    name,
     handle: profile.handle,
     profileUrl: profile.profileUrl,
     avatarUrl: normalizeImageUrl(result.imageUrl),
     relevanceScore: normalizeRelevanceScore(result.relevanceScore),
-    bio: "",
+    bio,
     contact: buildContactFromText([result.title, result.snippet].filter(Boolean).join(" ")),
     metrics: {
       followers: inferFollowersFromEvidence({ discovery: { evidenceText: [result.title, result.snippet].filter(Boolean).join(" ") } }),
@@ -608,10 +825,23 @@ function normalizeRelevanceScore(score) {
   return Math.max(0, Math.min(100, numeric <= 1 ? Math.round(numeric * 100) : Math.round(numeric)));
 }
 
-async function enrichSearchCandidates(creators, maxEnrichCount, signal) {
+async function enrichSearchCandidates(creators, maxEnrichCount, signal, logger) {
   const head = creators.slice(0, maxEnrichCount);
   const tail = creators.slice(maxEnrichCount);
-  const enriched = await mapWithConcurrency(head, 4, async (creator) => enrichFromPublicProfile(creator, signal).catch(() => creator));
+  const concurrency = readPositiveInt(process.env.TIKTOK_ENRICH_CONCURRENCY, DEFAULT_ENRICH_CONCURRENCY);
+  const startedAt = Date.now();
+  logger?.info("tiktok_enrich.start", {
+    candidates: creators.length,
+    enrichCount: head.length,
+    tailCount: tail.length,
+    concurrency
+  });
+  const enriched = await mapWithConcurrency(head, concurrency, async (creator) => enrichFromPublicProfile(creator, signal).catch(() => creator));
+  logger?.info("tiktok_enrich.done", {
+    stageElapsedMs: Date.now() - startedAt,
+    enriched: enriched.length,
+    returned: enriched.length + tail.length
+  });
   return [...enriched, ...tail];
 }
 
@@ -670,7 +900,7 @@ async function enrichFromPublicProfile(creator, signal) {
 
   return {
     ...creator,
-    name: profile.name || creator.name,
+    name: selectBestDisplayName(profile.name, creator.name, creator.handle),
     avatarUrl: profile.avatarUrl || creator.avatarUrl,
     bio: profile.bio || creator.bio,
     contact: mergeContact(creator.contact, profile.contact),
@@ -768,7 +998,7 @@ function extractJinaProfileBio(markdown) {
 }
 
 function isTikTokBoilerplateText(text) {
-  return /^(?:\d+\.\s*)?(Title:|URL Source:|Markdown Content:|TikTok Shop|Company|Program|Terms|Policies|©|Followers$|Following$|Likes$)/i.test(text)
+  return /^(?:\d+\.\s*)?(Title:|URL Source:|Markdown Content:|TikTok$|TikTok Search$|TikTok Shop|Company|Program|Terms|Policies|©|Followers$|Following$|Likes$)/i.test(text)
     || /Browse your favorite items/i.test(text)
     || /Visit TikTok to discover more trending creators/i.test(text)
     || /Skip to content|For You|Following|LIVE|Log in to follow creators/i.test(text)
@@ -822,6 +1052,23 @@ function expandSearchTerms(rawText, terms = []) {
   return unique(expanded).filter((term) => !/^-/.test(term));
 }
 
+function buildHashtagTerms(terms = []) {
+  return unique(terms)
+    .map((term) => String(term || "").toLowerCase().replace(/[^a-z0-9_]/g, ""))
+    .filter((term) => term.length >= 3 && !/creator|influencer|female|woman/.test(term))
+    .map((term) => `#${term}`);
+}
+
+function buildAiSearchQuery(query, countryQuery, negativeTerms) {
+  const cleaned = String(query || "")
+    .replace(/site:(?:x|twitter)\.com\/?\S*/gi, "")
+    .replace(/site:(?:www\.)?tiktok\.com\/@/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return "";
+  return `site:tiktok.com/@ ${cleaned} ${countryQuery} ${negativeTerms.join(" ")}`.replace(/\s+/g, " ").trim();
+}
+
 function requiresStrictTopic(plan) {
   const text = `${plan.normalizedBrief?.rawText || ""} ${(plan.positiveTerms || []).join(" ")}`.toLowerCase();
   return /coser|cosplay|cosplayer|二次元|角色扮演|\bcos\b/i.test(text);
@@ -840,11 +1087,26 @@ function matchesNegativeTerms(creator, negativeTerms) {
     creator.name,
     creator.handle,
     creator.bio,
-    creator.discovery?.evidenceText,
+    getObservedEvidenceText(creator.discovery?.evidenceText),
     ...(creator.tags || [])
   ].join(" ").toLowerCase();
 
-  return !negativeTerms.some((term) => haystack.includes(String(term).toLowerCase()));
+  return !negativeTerms.some((term) => matchesNegativeTerm(haystack, term));
+}
+
+function getObservedEvidenceText(evidenceText = "") {
+  return String(evidenceText || "")
+    .split(";")
+    .map((part) => part.trim())
+    .filter((part) => !/^searchQuery:/i.test(part) && !/^queryTerms:/i.test(part))
+    .join("; ");
+}
+
+function matchesNegativeTerm(haystack, term) {
+  const normalized = String(term || "").replace(/^-+/, "").trim().toLowerCase();
+  if (!normalized) return false;
+  if (/[\u4e00-\u9fff]/.test(normalized)) return haystack.includes(normalized);
+  return new RegExp(`(^|[^a-z0-9])${escapeRegExp(normalized)}([^a-z0-9]|$)`, "i").test(haystack);
 }
 
 function normalizeTikTokHandle(handle) {
@@ -969,13 +1231,200 @@ function isNoisySearchResult(result = {}) {
   return false;
 }
 
+function rankSearchCandidates(creators) {
+  return [...creators].sort((left, right) => candidatePriority(right) - candidatePriority(left));
+}
+
+function candidatePriority(creator) {
+  const relevance = Number(creator.relevanceScore ?? creator.discovery?.relevanceScore ?? 0);
+  const tagScore = Math.min((creator.tags || []).length * 4, 24);
+  const followerScore = creator.metrics?.followers ? 12 : 0;
+  const profileScore = creator.discovery?.kind === "profile" ? 8 : 0;
+  const contactScore = creator.contact?.email ? 6 : 0;
+  return relevance + tagScore + followerScore + profileScore + contactScore;
+}
+
+function attachDiscoveryMeta(creators, meta) {
+  Object.defineProperty(creators, "discoveryMeta", {
+    value: meta,
+    enumerable: false
+  });
+  return creators;
+}
+
+function readPositiveInt(value, fallback) {
+  const number = Number(value || fallback);
+  return Number.isFinite(number) && number > 0 ? Math.round(number) : fallback;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw new Error("TikTok 搜索已取消");
+}
+
+function createDiscoveryEmptyError(message) {
+  const error = new Error(message);
+  error.name = "DiscoveryEmptyError";
+  error.statusCode = 200;
+  error.code = "DISCOVERY_EMPTY";
+  return error;
+}
+
+function buildFallbackSearchFailureMessage(diagnostics = {}, elapsedMs = 0, errors = []) {
+  const sources = Array.isArray(diagnostics.sources) ? diagnostics.sources : [];
+  const sourcesTried = sources.length || diagnostics.configuredSources?.length || 1;
+  const queriesTried = sources.reduce((total, source) => total + Number(source.queriesTried || 0), 0)
+    || diagnostics.queryCount
+    || 0;
+  const rawResults = sumDiagnosticField(diagnostics, "rawResults");
+  const profileCandidates = sumDiagnosticField(diagnostics, "profileCandidates");
+  const parsedCandidates = sumDiagnosticField(diagnostics, "parsedCandidates");
+  const candidateFiltered = sumDiagnosticField(diagnostics, "candidateFiltered");
+  const negativeFiltered = sumDiagnosticField(diagnostics, "negativeFiltered");
+  const timeoutCount = errors.filter(isTimeoutLikeMessage).length;
+  const timeoutText = timeoutCount
+    ? `其中 ${timeoutCount} 次请求超时或被中止。`
+    : "";
+  const diagnosisText = buildFallbackSearchDiagnosisText({
+    rawResults,
+    profileCandidates,
+    parsedCandidates,
+    candidateFiltered,
+    negativeFiltered,
+    configuredSources: diagnostics.configuredSources || []
+  });
+
+  return [
+    `TikTok 公开网页搜索未召回候选：已尝试 ${sourcesTried} 个搜索源、${queriesTried} 次查询，用时 ${formatElapsedDuration(elapsedMs)}。`,
+    rawResults ? `搜索源原始返回 ${rawResults} 条结果，识别到 ${profileCandidates} 条 TikTok @主页链接，通过候选构建 ${parsedCandidates} 条。` : "",
+    candidateFiltered ? `有 ${candidateFiltered} 条 @主页被噪声或严格主题规则过滤。` : "",
+    negativeFiltered ? `有 ${negativeFiltered} 条候选被负向关键词过滤。` : "",
+    timeoutText,
+    diagnosisText
+  ].filter(Boolean).join("");
+}
+
+function buildFallbackSearchDiagnosisText({
+  rawResults,
+  profileCandidates,
+  parsedCandidates,
+  candidateFiltered,
+  negativeFiltered,
+  configuredSources
+}) {
+  if (!rawResults) {
+    return configuredSources?.length
+      ? "判断：搜索源基本没有返回可用搜索结果，优先检查关键词是否过窄、国家筛选是否过严，或稍后重试。"
+      : "判断：当前只有公开网页兜底源，稳定性较弱，建议配置 Serper/Tavily/Brave/Jina 任一搜索源。";
+  }
+  if (!profileCandidates) {
+    return "判断：搜索源有返回，但结果不是 TikTok @主页链接；建议减少限定词，或增加 creator/influencer/hashtag 类扩展词。";
+  }
+  if (!parsedCandidates && candidateFiltered) {
+    return "判断：搜索结果里有 TikTok @主页，但被噪声或严格主题规则过滤；建议检查关键词是否触发了严格主题匹配。";
+  }
+  if (!parsedCandidates && negativeFiltered) {
+    return "判断：搜索结果里有候选，但全部命中了排除词；建议检查负向关键词是否过宽。";
+  }
+  return "判断：搜索源返回不稳定，建议稍后重试，或降低每轮 query 数后优先使用稳定 API 源。";
+}
+
+function sumDiagnosticField(diagnostics = {}, field) {
+  const sources = Array.isArray(diagnostics.sources) ? diagnostics.sources : [];
+  return sources.reduce((total, source) => total + Number(source[field] || 0), 0);
+}
+
+function isTimeoutLikeMessage(message) {
+  return /aborted|abort|timeout|timed out|超时|中止|取消/i.test(String(message || ""));
+}
+
+function shouldLogQueries() {
+  return process.env.DISCOVERY_LOG_QUERIES === "true";
+}
+
+function formatElapsedDuration(ms) {
+  const totalSeconds = Math.max(1, Math.ceil(Number(ms || 0) / 1000));
+  if (totalSeconds < 60) return `${totalSeconds} 秒`;
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分钟`;
+}
+
+function chunkArray(items, size) {
+  const chunkSize = Math.max(1, Number(size) || 1);
+  const chunks = [];
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize));
+  }
+  return chunks;
+}
+
+export const __testing = {
+  buildAiSearchQuery,
+  buildFallbackSearchFailureMessage,
+  buildHashtagTerms,
+  buildSearchQueries,
+  candidatePriority,
+  attachDiscoveryMeta,
+  chunkArray,
+  parseSearchPage,
+  readPositiveInt
+};
+
 function cleanProfileTitle(title, fallback) {
+  const fallbackName = String(fallback || "").replace(/^@/, "");
   const text = cleanHtmlText(title)
     .replace(/\|\s*tiktok.*$/i, "")
     .replace(/-\s*tiktok.*$/i, "")
+    .replace(/\s+on\s+tiktok$/i, "")
+    .replace(/^tiktok\s*[-·:]\s*/i, "")
+    .replace(/^@\w[\w.]*\s*[-·:]\s*/i, "")
     .replace(/\(@[^)]*\)/g, "")
+    .replace(/^\d+\.\s*/, "")
     .trim();
-  return text || fallback || "";
+  if (!isUsableDisplayName(text, fallbackName)) return fallbackName || "";
+  return text;
+}
+
+function buildSearchResultBio(snippet, fallbackHandle) {
+  const text = cleanHtmlText(snippet)
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text || isTikTokBoilerplateText(text)) return "";
+  if (isTagLikeTitle(text, fallbackHandle)) return "";
+  return text.length > 220 ? `${text.slice(0, 217).trim()}...` : text;
+}
+
+function selectBestDisplayName(primary, fallback, handle) {
+  const rawHandle = String(handle || "").replace(/^@/, "");
+  const primaryName = cleanProfileTitle(primary, rawHandle);
+  if (isUsableDisplayName(primaryName, rawHandle)) return primaryName;
+
+  const fallbackName = cleanProfileTitle(fallback, rawHandle);
+  if (isUsableDisplayName(fallbackName, rawHandle)) return fallbackName;
+  return rawHandle || fallbackName || primaryName || "";
+}
+
+function isUsableDisplayName(name, fallbackHandle = "") {
+  const text = cleanHtmlText(name);
+  if (!text) return false;
+  if (text.length > 80) return false;
+  if (isTikTokBoilerplateText(text)) return false;
+  if (isTagLikeTitle(text, fallbackHandle)) return false;
+  return true;
+}
+
+function isTagLikeTitle(value, fallbackHandle = "") {
+  const text = cleanHtmlText(value).toLowerCase();
+  const handle = String(fallbackHandle || "").replace(/^@/, "").toLowerCase();
+  if (!text) return true;
+  if (handle && (text === handle || text === `@${handle}`)) return false;
+  if (/^#/.test(text)) return true;
+  if ((text.match(/#/g) || []).length >= 2) return true;
+  if (/^(?:creator|influencer|female|woman|women|girl|girls|beauty|fashion|颜值|交友|黑丝)(?:[\s,，/|、#-]+(?:creator|influencer|female|woman|women|girl|girls|beauty|fashion|颜值|交友|黑丝))*$/i.test(text)) {
+    return true;
+  }
+  return false;
 }
 
 function cleanMarkdownText(text) {

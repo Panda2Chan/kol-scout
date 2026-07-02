@@ -7,6 +7,7 @@
     "backend": "node backend/server.js",
     "build:css": "tailwindcss -i ./src/popup/tailwind.css -o ./src/popup/popup.css --minify",
     "dev:css": "tailwindcss -i ./src/popup/tailwind.css -o ./src/popup/popup.css --watch",
+    "test": "node --test",
     "check": "find src backend -name '*.js' -print0 | xargs -0 -n1 node --check && node -e \"JSON.parse(require('fs').readFileSync('manifest.json','utf8')); console.log('manifest ok')\""
   },
   "devDependencies": {

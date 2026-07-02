@@ -4,9 +4,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const DEFAULT_MODEL = "gpt-5.5";
-const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_TIMEOUT_MS = 45_000;
+const AI_POSTPROCESS_TIMEOUT_MS = 45_000;
+const AI_POSTPROCESS_LIMIT = 30;
 const PLAN_CACHE_TTL_MS = 10 * 60 * 1000;
-const AI_WEB_SEARCH_TIMEOUT_MS = 180_000;
+const AI_WEB_SEARCH_TIMEOUT_MS = 90_000;
 const planCache = new Map();
 
 const SYSTEM_PROMPT = `
@@ -17,6 +19,20 @@ JSON 字段：kolOpsRelevant, intent, queries, positiveTerms, mustHave, shouldHa
 1. queries 必须是 4-6 条可执行的 X/Twitter 全站搜索查询，优先英文，必要时补充中文/日文/韩文同义词。
 2. 每条 query 必须包含 site:x.com 或 site:twitter.com，并覆盖「人群/地区/性别/垂类/内容形态」中至少 2 类要素。
 3. 不要返回账号 handle，不要编造账号；只规划搜索词。
+4. 必须面向 KOL 运营找 OP/creator/influencer，优先个人创作者、可合作账号、有商务联系方式或稳定内容输出的账号。
+5. exclude 必须包含 giveaway/airdrop/adult/porn/follow back/official/news/shop/store/brand/agency。
+6. qualitySignals 必须覆盖：个人账号、垂直内容、近期活跃、简介完整、真实互动、可联系。
+7. 如果用户给出粉丝数下限，把它写入 mustHave/qualitySignals，但不要用不可靠语法强行塞进 query。
+`.trim();
+
+const TIKTOK_SYSTEM_PROMPT = `
+你是 KOL 运营搜索规划器。把用户需求改写成 TikTok 创作者全站搜索策略。
+只输出严格 JSON；不要解释；不要编造账号。
+JSON 字段：kolOpsRelevant, intent, queries, positiveTerms, mustHave, shouldHave, exclude, qualitySignals, notes。
+通用查询规范：
+1. queries 必须是 4-8 条可执行的 TikTok 公开网页搜索查询，优先英文，必要时补充中文/日文/韩文同义词。
+2. 每条 query 必须面向 site:tiktok.com/@ 或 site:www.tiktok.com/@，覆盖「垂类/人群/地区/性别/内容形态/标签」中至少 2 类要素。
+3. query 可包含 TikTok 常用标签词，例如 #beautytok、#skintok、#cosplay、#fitness，但不要编造账号 handle。
 4. 必须面向 KOL 运营找 OP/creator/influencer，优先个人创作者、可合作账号、有商务联系方式或稳定内容输出的账号。
 5. exclude 必须包含 giveaway/airdrop/adult/porn/follow back/official/news/shop/store/brand/agency。
 6. qualitySignals 必须覆盖：个人账号、垂直内容、近期活跃、简介完整、真实互动、可联系。
@@ -53,7 +69,7 @@ export async function buildAiCreatorSearchPlan(brief, fallbackPlan, options = {}
   }
 
   const prompt = buildKolOpsPrompt(brief, basePlan, options);
-  const cacheKey = buildPlanCacheKey(brief, basePlan, config);
+  const cacheKey = buildPlanCacheKey(brief, basePlan, config, options.feedbackSummary);
   const cached = getCachedPlan(cacheKey);
   if (cached) return cached;
 
@@ -154,14 +170,82 @@ export async function discoverCreatorsWithAiWebSearch(brief, plan, options = {})
   };
 }
 
-function buildPlanCacheKey(brief, fallbackPlan, config) {
+export async function postProcessCreatorsWithAi(brief, creators = [], options = {}) {
+  const sourceCreators = Array.isArray(creators) ? creators : [];
+  const limit = clampNumber(Number(options.limit || process.env.AI_POSTPROCESS_LIMIT || AI_POSTPROCESS_LIMIT), 1, 60);
+  const candidates = sourceCreators.slice(0, limit);
+
+  if (!candidates.length) {
+    return {
+      creators: sourceCreators,
+      meta: { enabled: false, reason: "没有可复核候选" }
+    };
+  }
+
+  if (process.env.AI_POSTPROCESS_DISABLED === "true") {
+    return {
+      creators: sourceCreators,
+      meta: { enabled: false, reason: "AI 后处理已关闭" }
+    };
+  }
+
+  const config = loadAiConfig(options);
+  if (!config.apiKey || !config.baseUrl) {
+    return {
+      creators: sourceCreators,
+      meta: { enabled: false, reason: "未找到 OpenAI/cc switch API 配置" }
+    };
+  }
+
+  const prompt = buildAiCreatorReviewPrompt(brief, candidates, options);
+  const signal = createTimeoutSignal(
+    readTimeoutMs(options.timeoutMs || process.env.AI_POSTPROCESS_TIMEOUT_MS, AI_POSTPROCESS_TIMEOUT_MS),
+    options.signal
+  );
+
+  try {
+    const payload = await requestAiJson(config, prompt, signal, 1800);
+    const reviewMap = normalizeAiCreatorReviews(payload);
+    return {
+      creators: mergeAiCreatorReviews(sourceCreators, reviewMap),
+      meta: {
+        enabled: true,
+        provider: config.provider,
+        model: config.model,
+        promptVersion: "kol-ai-review-v1",
+        generatedAt: Date.now(),
+        reviewed: reviewMap.size,
+        submitted: candidates.length,
+        feedbackUsed: Boolean(options.feedbackSummary?.total)
+      }
+    };
+  } catch (error) {
+    return {
+      creators: sourceCreators,
+      meta: {
+        enabled: false,
+        provider: config.provider,
+        model: config.model,
+        error: formatAiErrorMessage(error),
+        fallback: "discovery-rules-v1"
+      }
+    };
+  }
+}
+
+function buildPlanCacheKey(brief, fallbackPlan, config, feedbackSummary = {}) {
   return [
     config.provider,
     config.model,
     fallbackPlan.platform || "x",
     String(brief.rawText || "").trim().toLowerCase(),
     (fallbackPlan.positiveTerms || []).join("|"),
-    (fallbackPlan.negativeTerms || []).join("|")
+    (fallbackPlan.negativeTerms || []).join("|"),
+    (feedbackSummary.preferredTags || []).join("|"),
+    (feedbackSummary.rejectedTags || []).join("|"),
+    feedbackSummary.saved || 0,
+    feedbackSummary.ignored || 0,
+    feedbackSummary.removed || 0
   ].join("::");
 }
 
@@ -267,20 +351,26 @@ function normalizeConfig(config) {
 }
 
 function buildKolOpsPrompt(brief, fallbackPlan, options) {
+  const platform = options.platform || fallbackPlan.platform || "x";
   const user = [
-    `platform=${options.platform || fallbackPlan.platform || "x"}`,
+    `platform=${platform}`,
     `locale=${options.locale || "zh-CN"}`,
     `userInput=${brief.rawText || ""}`,
     `fallbackTerms=${(fallbackPlan.positiveTerms || []).join(", ")}`,
     `negativeTerms=${(fallbackPlan.negativeTerms || []).join(", ")}`,
     `filters=${JSON.stringify(options.filters || {})}`,
+    `feedback=${JSON.stringify(compactFeedbackSummary(options.feedbackSummary))}`,
     "Return JSON only. Keep arrays short. Do not include account handles."
   ].join("\n");
 
   return {
-    system: SYSTEM_PROMPT,
+    system: buildSearchPlanSystemPrompt(platform),
     user
   };
+}
+
+function buildSearchPlanSystemPrompt(platform) {
+  return String(platform || "").toLowerCase() === "tiktok" ? TIKTOK_SYSTEM_PROMPT : SYSTEM_PROMPT;
 }
 
 function buildAiWebSearchPrompt(brief, plan, options) {
@@ -311,6 +401,102 @@ JSON 格式：{"creators":[{"handle":"@...","name":"","profileUrl":"https://x.co
   ].join("\n");
 
   return { system, user };
+}
+
+function buildAiCreatorReviewPrompt(brief, creators, options) {
+  const system = `
+你是 KOL 运营候选复核智能体。你只基于输入的公开资料和搜索证据做清洗、重排和风险判断。
+必须返回严格 JSON，不要解释，不要编造粉丝量、邮箱、地区或账号。
+JSON 格式：{"reviews":[{"id":"","semanticScore":0,"evidenceConfidence":0,"collaborationFit":0,"isPersonalCreator":true,"reject":false,"rejectReason":"","cleanedBio":"","normalizedTags":[],"reasons":[],"concerns":[]}]}
+评分规范：
+1. semanticScore 表示候选与 Brief 的语义匹配度，0-100。
+2. evidenceConfidence 表示公开证据是否足够支撑判断，0-100。
+3. collaborationFit 表示是否像可合作个人创作者，0-100。
+4. 店铺、品牌官方、新闻媒体、搬运聚合、bot、成人擦边、抽奖互关账号应 reject=true。
+5. 粉丝数未知只能降低 evidenceConfidence，不能单独作为 reject 理由。
+6. cleanedBio 只能清理模板噪声，不要补写不存在的信息。
+`.trim();
+
+  const user = [
+    `platform=${options.platform || "x"}`,
+    `locale=${options.locale || "zh-CN"}`,
+    `brief=${brief.rawText || ""}`,
+    `filters=${JSON.stringify(options.filters || {})}`,
+    `feedback=${JSON.stringify(compactFeedbackSummary(options.feedbackSummary))}`,
+    `candidates=${JSON.stringify(creators.map(compactCreatorForAi))}`,
+    "Return JSON only."
+  ].join("\n");
+
+  return { system, user };
+}
+
+async function requestAiJson(config, prompt, signal, maxTokens = 900) {
+  if (process.env.AI_SEARCH_API_MODE !== "responses") {
+    return requestChatCompletionsJson(config, prompt, "", signal, maxTokens);
+  }
+
+  const response = await fetch(config.responsesUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.apiKey}`
+    },
+    body: JSON.stringify({
+      model: config.model,
+      instructions: prompt.system,
+      input: prompt.user,
+      max_output_tokens: maxTokens,
+      store: false
+    }),
+    signal
+  }).catch((error) => ({ networkError: error }));
+
+  if (response.networkError) {
+    return requestChatCompletionsJson(config, prompt, response.networkError.message, signal, maxTokens);
+  }
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    return requestChatCompletionsJson(
+      config,
+      prompt,
+      payload.error?.message || `OpenAI Responses 请求失败：${response.status}`,
+      signal,
+      maxTokens
+    );
+  }
+
+  const text = extractResponseText(payload);
+  if (!text) throw new Error("OpenAI Responses 未返回文本");
+  return parseJsonObject(text);
+}
+
+async function requestChatCompletionsJson(config, prompt, previousError = "", signal, maxTokens = 900) {
+  const response = await fetch(config.chatCompletionsUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.apiKey}`
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages: [
+        { role: "system", content: prompt.system },
+        { role: "user", content: prompt.user }
+      ],
+      max_tokens: maxTokens
+    }),
+    signal
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error?.message || previousError || `OpenAI Chat 请求失败：${response.status}`);
+  }
+
+  const text = payload.choices?.[0]?.message?.content || "";
+  if (!text) throw new Error(previousError || "OpenAI Chat 未返回文本");
+  return parseJsonObject(text);
 }
 
 async function requestAiSearchPlan(config, prompt, signal) {
@@ -436,6 +622,116 @@ function extractFirstJsonObject(text) {
   return "";
 }
 
+function compactCreatorForAi(creator) {
+  return {
+    id: creator.id || "",
+    platform: creator.platform || "",
+    handle: creator.handle || "",
+    name: creator.name || "",
+    bio: truncateText(creator.bio || "", 260),
+    followers: creator.metrics?.followers ?? null,
+    tags: (creator.tags || []).slice(0, 10),
+    matchScore: creator.match?.score ?? creator.score ?? null,
+    qualityScore: creator.quality?.score ?? null,
+    fakeFollowerRisk: creator.quality?.fakeFollowerRisk || "",
+    reasons: (creator.match?.reasons || []).slice(0, 4),
+    concerns: [...(creator.match?.concerns || []), ...(creator.quality?.concerns || [])].slice(0, 6),
+    evidence: truncateText(creator.discovery?.evidenceText || creator.discovery?.summary || "", 420)
+  };
+}
+
+function normalizeAiCreatorReviews(payload) {
+  const reviews = payload.reviews || payload.creators || payload.results || payload.items || [];
+  const byKey = new Map();
+
+  for (const item of Array.isArray(reviews) ? reviews : []) {
+    const normalized = normalizeAiCreatorReview(item);
+    if (!normalized) continue;
+    if (normalized.id) byKey.set(normalized.id, normalized);
+    if (normalized.handle) byKey.set(normalized.handle.toLowerCase(), normalized);
+  }
+
+  return byKey;
+}
+
+function normalizeAiCreatorReview(item = {}) {
+  const id = String(item.id || item.creatorId || "").trim();
+  const handle = String(item.handle || "").trim();
+  if (!id && !handle) return null;
+
+  return {
+    id,
+    handle,
+    semanticScore: normalizeScore(item.semanticScore ?? item.matchScore ?? item.relevanceScore),
+    evidenceConfidence: normalizeScore(item.evidenceConfidence ?? item.confidence),
+    collaborationFit: normalizeScore(item.collaborationFit ?? item.businessFit),
+    isPersonalCreator: item.isPersonalCreator !== false,
+    reject: Boolean(item.reject),
+    rejectReason: truncateText(item.rejectReason || item.reason || "", 80),
+    cleanedBio: truncateText(item.cleanedBio || item.bio || "", 220),
+    normalizedTags: uniqueStrings(item.normalizedTags || item.tags || []).slice(0, 10),
+    reasons: uniqueStrings(item.reasons || item.positiveSignals || []).slice(0, 4),
+    concerns: uniqueStrings(item.concerns || item.risks || []).slice(0, 4),
+    notes: uniqueStrings(item.notes || []).slice(0, 3)
+  };
+}
+
+function mergeAiCreatorReviews(creators, reviewMap) {
+  if (!reviewMap.size) return creators;
+
+  return creators.map((creator) => {
+    const review = findAiReview(creator, reviewMap);
+    if (!review) return creator;
+
+    const aiReasons = review.reasons.map((reason) => `AI复核：${reason}`);
+    const aiConcerns = [
+      ...review.concerns.map((concern) => `AI复核：${concern}`),
+      review.reject ? `AI建议排除：${review.rejectReason || "不符合个人创作者画像"}` : "",
+      review.isPersonalCreator === false ? "AI复核：疑似非个人创作者" : ""
+    ].filter(Boolean);
+    const cleanedBio = review.cleanedBio && !isLikelyBoilerplate(review.cleanedBio) ? review.cleanedBio : "";
+
+    return {
+      ...creator,
+      bio: cleanedBio || creator.bio,
+      tags: uniqueStrings([...(creator.tags || []), ...review.normalizedTags]).slice(0, 16),
+      aiReview: review,
+      match: {
+        ...creator.match,
+        provider: "discovery-ai-rerank-v1",
+        reasons: uniqueStrings([...(creator.match?.reasons || []), ...aiReasons]).slice(0, 8),
+        concerns: uniqueStrings([...(creator.match?.concerns || []), ...aiConcerns]).slice(0, 10),
+        dimensions: {
+          ...(creator.match?.dimensions || {}),
+          aiSemantic: review.semanticScore,
+          aiEvidence: review.evidenceConfidence,
+          aiCollaboration: review.collaborationFit,
+          aiPersonalCreator: review.isPersonalCreator,
+          aiReject: review.reject
+        }
+      },
+      quality: {
+        ...creator.quality,
+        signals: uniqueStrings([
+          ...(creator.quality?.signals || []),
+          review.isPersonalCreator ? "AI确认个人创作者信号" : ""
+        ]),
+        concerns: uniqueStrings([...(creator.quality?.concerns || []), ...aiConcerns])
+      }
+    };
+  });
+}
+
+function findAiReview(creator, reviewMap) {
+  const keys = [
+    creator.id,
+    creator.handle,
+    String(creator.handle || "").toLowerCase(),
+    creator.profileUrl
+  ].filter(Boolean);
+  return keys.map((key) => reviewMap.get(key)).find(Boolean) || null;
+}
+
 function normalizeAiPlan(aiPlan, fallbackPlan) {
   const positiveTerms = uniqueStrings([
     ...(aiPlan.positiveTerms || []),
@@ -450,7 +746,11 @@ function normalizeAiPlan(aiPlan, fallbackPlan) {
     "adult",
     "porn",
     "official",
-    "news"
+    "news",
+    "shop",
+    "store",
+    "brand",
+    "agency"
   ]).slice(0, 18);
 
   return {
@@ -463,6 +763,20 @@ function normalizeAiPlan(aiPlan, fallbackPlan) {
     exclude,
     qualitySignals: uniqueStrings(aiPlan.qualitySignals || []).slice(0, 12),
     notes: uniqueStrings(aiPlan.notes || []).slice(0, 8)
+  };
+}
+
+function compactFeedbackSummary(feedbackSummary = {}) {
+  if (!feedbackSummary?.total) return {};
+  return {
+    total: feedbackSummary.total,
+    saved: feedbackSummary.saved,
+    ignored: feedbackSummary.ignored,
+    removed: feedbackSummary.removed,
+    preferredTags: (feedbackSummary.preferredTags || []).slice(0, 8),
+    rejectedTags: (feedbackSummary.rejectedTags || []).slice(0, 8),
+    savedExamples: (feedbackSummary.savedExamples || []).slice(0, 5),
+    ignoredExamples: (feedbackSummary.ignoredExamples || []).slice(0, 5)
   };
 }
 
@@ -649,6 +963,32 @@ function toArray(value) {
   return [value];
 }
 
+function normalizeScore(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return clampNumber(Math.round(numeric), 0, 100);
+}
+
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function truncateText(value, maxLength) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function isLikelyBoilerplate(text) {
+  return /Browse your favorite items|TikTok Shop is now available|Visit TikTok to discover more trending creators|Skip to content|For You|Following|LIVE|Log in/i.test(String(text || ""));
+}
+
 function escapeRegExp(value) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+export const __testing = {
+  compactFeedbackSummary,
+  compactCreatorForAi,
+  mergeAiCreatorReviews,
+  normalizeAiCreatorReviews
+};

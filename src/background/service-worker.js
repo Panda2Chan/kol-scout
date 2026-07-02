@@ -1,4 +1,12 @@
-import { clearKols, getKols, removeKol, setLastScan, upsertKols } from "../shared/storage.js";
+import {
+  clearKols,
+  getDiscoveryFeedback,
+  getKols,
+  recordDiscoveryFeedback,
+  removeKol,
+  setLastScan,
+  upsertKols
+} from "../shared/storage.js";
 
 const API_BASE_URL = "http://127.0.0.1:8787";
 
@@ -19,7 +27,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "SAVE_CANDIDATES") {
-    upsertKols(message.payload?.candidates || [])
+    saveCandidates(message.payload?.candidates || [], message.payload?.context || {})
       .then((kols) => sendResponse({ ok: true, kols }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -33,15 +41,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "CLEAR_SAVED_KOLS") {
-    clearKols()
+    clearSavedKols(message.payload?.context || {})
       .then(() => sendResponse({ ok: true, kols: [] }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
 
   if (message?.type === "REMOVE_SAVED_KOL") {
-    removeKol(message.payload?.id || "")
+    removeSavedKol(message.payload?.id || "", message.payload?.creator || null, message.payload?.context || {})
       .then((kols) => sendResponse({ ok: true, kols }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "RECORD_DISCOVERY_FEEDBACK") {
+    recordDiscoveryFeedback(
+      message.payload?.creators || [],
+      message.payload?.action || "",
+      message.payload?.context || {}
+    )
+      .then((feedback) => sendResponse({ ok: true, feedback }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
@@ -134,6 +153,7 @@ async function searchCreators(brief, options = {}) {
 }
 
 async function discoverCreators(brief, options = {}) {
+  const feedback = await getDiscoveryFeedback({ platform: options.platform || "x" });
   return postJson("/api/discover/creators", {
     brief,
     platform: options.platform || "x",
@@ -144,8 +164,44 @@ async function discoverCreators(brief, options = {}) {
       minFollowers: 0,
       maxFakeFollowerRisk: "medium"
     },
+    feedback,
     locale: "zh-CN"
   });
+}
+
+async function saveCandidates(candidates, context = {}) {
+  const kols = await upsertKols(candidates);
+  await recordDiscoveryFeedback(candidates, "saved", {
+    ...context,
+    source: context.source || "background",
+    scope: context.scope || "candidate"
+  }).catch(() => null);
+  return kols;
+}
+
+async function removeSavedKol(id, creator, context = {}) {
+  const kols = await getKols();
+  const target = creator || kols.find((kol) => kol.id === id);
+  if (target) {
+    await recordDiscoveryFeedback(target, "removed", {
+      ...context,
+      source: context.source || "background",
+      scope: context.scope || "saved"
+    }).catch(() => null);
+  }
+  return removeKol(id);
+}
+
+async function clearSavedKols(context = {}) {
+  const kols = await getKols();
+  if (kols.length) {
+    await recordDiscoveryFeedback(kols, "removed", {
+      ...context,
+      source: context.source || "background",
+      scope: context.scope || "saved"
+    }).catch(() => null);
+  }
+  return clearKols();
 }
 
 async function openCreatorProfile(profileUrl) {

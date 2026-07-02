@@ -3,6 +3,7 @@ import { PLATFORM_LABELS, createKol, createMatchBrief } from "../shared/schema.j
 import {
   getMatchBrief,
   getKols,
+  recordDiscoveryFeedback,
   removeKol,
   setMatchBrief,
   updateKol,
@@ -285,6 +286,7 @@ async function saveAllCandidates() {
   }
 
   state.saved = await upsertKols(state.candidates);
+  await recordFeedback(state.candidates, "saved", "candidate");
   render();
   setNotice(`已保存 ${state.candidates.length} 个候选。`, "success");
 }
@@ -364,19 +366,30 @@ function renderCard(kol, options) {
     deleteButton.remove();
     saveButton.addEventListener("click", async () => {
       const edited = readCardEdits(kol, card);
+      if (edited.status === "ignored") {
+        await recordFeedback([edited], "ignored", "candidate");
+        state.candidates = state.candidates.filter((item) => item.id !== kol.id);
+        render();
+        setNotice("已忽略当前候选，后续搜索会降低类似结果权重。", "success");
+        return;
+      }
       state.saved = await upsertKols([edited]);
+      await recordFeedback([edited], "saved", "candidate");
       render();
       setNotice("已保存当前候选。", "success");
     });
   } else {
     saveButton.textContent = "更新";
     saveButton.addEventListener("click", async () => {
-      await updateKol(kol.id, readCardEdits(kol, card));
+      const edited = readCardEdits(kol, card);
+      await updateKol(kol.id, edited);
+      await recordFeedback([edited], edited.status === "ignored" ? "ignored" : "saved", "saved");
       await refreshSaved();
       setNotice("线索已更新。", "success");
     });
 
     deleteButton.addEventListener("click", async () => {
+      await recordFeedback([kol], "removed", "saved");
       state.saved = await removeKol(kol.id);
       render();
       setNotice("线索已删除。", "success");
@@ -425,6 +438,23 @@ function readCardEdits(kol, card) {
       .map((tag) => tag.trim())
       .filter(Boolean),
     notes: card.querySelector(".notes-input").value.trim()
+  };
+}
+
+async function recordFeedback(creators, action, scope) {
+  const list = Array.isArray(creators) ? creators : [creators];
+  if (!list.length) return;
+  await recordDiscoveryFeedback(list, action, buildFeedbackContext(scope)).catch(() => {});
+}
+
+function buildFeedbackContext(scope) {
+  return {
+    source: "popup",
+    scope,
+    briefText: elements.matchBrief.value || "",
+    platform: state.platform,
+    country: state.country,
+    minFollowers: Math.max(0, Number(elements.minFollowers?.value || 0) || 0)
   };
 }
 

@@ -95,6 +95,31 @@ TikTok 多源搜索聚合可选，配置后会优先合并这些搜索源结果�
 - `BRAVE_SEARCH_API_KEY`
 - `JINA_API_KEY`
 
+TikTok 召回调优可选：
+
+- `TIKTOK_SEARCH_QUERY_LIMIT`：每轮最多执行的 TikTok 搜索 query 数，默认 `16`
+- `TIKTOK_ENRICH_LIMIT`：每轮最多补全公开主页资料的候选数，默认 `40`
+- `TIKTOK_SEARCH_SOURCE_CONCURRENCY`：并发搜索源数量，默认 `3`
+- `TIKTOK_SEARCH_QUERY_CONCURRENCY`：单个搜索源内并发 query 数，默认 `3`
+- `TIKTOK_ENRICH_CONCURRENCY`：公开主页补全并发数，默认 `8`
+
+AI 后处理调优可选：
+
+- `AI_POSTPROCESS_DISABLED=true`：关闭候选 AI 清洗和重排
+- `AI_POSTPROCESS_LIMIT`：每轮最多提交给 AI 复核的候选数，默认 `30`
+- `AI_POSTPROCESS_TIMEOUT_MS`：AI 复核超时时间，默认 `45000`
+
+服务端定位日志可选：
+
+- `DISCOVERY_TOTAL_TIMEOUT_MS`：全站匹配总超时时间，默认 `600000`（10 分钟）
+- `DISCOVERY_THIRD_PARTY_CACHE_TTL_MS`：三方召回结果内存缓存时间，默认 `600000`（10 分钟）
+- `DISCOVERY_THIRD_PARTY_CACHE_DISABLED=true`：关闭三方召回缓存
+- `DISCOVERY_DEBUG_LOGS=false`：关闭全站匹配阶段耗时日志，默认开启
+- `DISCOVERY_LOG_QUERIES=true`：在 TikTok 搜索日志中打印 query 样本，默认关闭
+
+保存、忽略、删除等用户反馈会保存在本地 `chrome.storage.local`，
+下一轮全站匹配会把反馈摘要提交给后端，用于优化 AI 搜索规划和候选重排。
+
 未配置三方源时，X 会使用 AI Web Search 和网页搜索兜底召回；
 TikTok 会使用已配置的搜索聚合源，并回退到公开网页搜索兜底召回。
 

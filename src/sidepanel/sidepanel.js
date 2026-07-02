@@ -183,6 +183,7 @@ async function handleCardClick(event) {
   if (button.dataset.action === "profile") await openCreatorProfile(creator);
   if (button.dataset.action === "contact") showContact(creator);
   if (button.dataset.action === "save") await saveCandidates([creator]);
+  if (button.dataset.action === "ignore") await ignoreCandidate(creator);
   if (button.dataset.action === "removeSaved") await removeSavedCreator(creator);
 }
 
@@ -195,7 +196,10 @@ async function saveCandidates(candidates) {
 
   const response = await sendMessage({
     type: "SAVE_CANDIDATES",
-    payload: { candidates }
+    payload: {
+      candidates,
+      context: buildFeedbackContext("candidate")
+    }
   });
 
   if (!response?.ok) {
@@ -222,7 +226,11 @@ async function refreshSaved(options = {}) {
 async function removeSavedCreator(creator) {
   const response = await sendMessage({
     type: "REMOVE_SAVED_KOL",
-    payload: { id: creator.id }
+    payload: {
+      id: creator.id,
+      creator,
+      context: buildFeedbackContext("saved")
+    }
   });
   if (!response?.ok) {
     setNotice(response?.error || "删除失败。", "error");
@@ -242,8 +250,10 @@ async function clearCurrentView() {
     return;
   }
 
+  const clearedCandidates = candidatesForFeedback();
   state.candidates = [];
   state.summary = null;
+  await recordFeedback(clearedCandidates, "ignored", "candidate");
   setNotice("已清空候选列表，已保存 list 不受影响。", "success");
   await persistState();
   render();
@@ -258,7 +268,10 @@ async function clearSavedCreators() {
 
   if (!window.confirm("确认清空已保存 list？这个操作不可恢复。")) return;
 
-  const response = await sendMessage({ type: "CLEAR_SAVED_KOLS" });
+  const response = await sendMessage({
+    type: "CLEAR_SAVED_KOLS",
+    payload: { context: buildFeedbackContext("saved") }
+  });
   if (!response?.ok) {
     setNotice(response?.error || "清空已保存 list 失败。", "error");
     render();
@@ -346,6 +359,7 @@ function renderCard(creator) {
   const card = fragment.querySelector(".creator-card");
   const avatar = fragment.querySelector(".avatar");
   const saveButton = fragment.querySelector('[data-action="save"]');
+  const ignoreButton = fragment.querySelector('[data-action="ignore"]');
 
   card.dataset.id = creator.id || `${creator.platform}:${creator.handle || creator.profileUrl}`;
   avatar.textContent = getInitials(creator);
@@ -369,6 +383,7 @@ function renderCard(creator) {
   }
 
   if (state.activeView === "saved") {
+    ignoreButton.remove();
     saveButton.dataset.action = "removeSaved";
     saveButton.textContent = "删除";
   }
@@ -484,6 +499,42 @@ function buildDiscoveryFilters() {
     minFollowers: Math.max(0, Number(elements.minFollowers.value || 0) || 0),
     country: elements.countrySelect.value || "",
     maxFakeFollowerRisk: "medium"
+  };
+}
+
+async function ignoreCandidate(creator) {
+  state.candidates = state.candidates.filter((item) => item.id !== creator.id);
+  await recordFeedback([creator], "ignored", "candidate");
+  setNotice("已忽略该候选，后续搜索会降低类似结果权重。", "success");
+  await persistState();
+  render();
+}
+
+function candidatesForFeedback() {
+  return state.candidates.slice(0, 80);
+}
+
+async function recordFeedback(creators, action, scope) {
+  const list = Array.isArray(creators) ? creators : [creators];
+  if (!list.length) return;
+  await sendMessage({
+    type: "RECORD_DISCOVERY_FEEDBACK",
+    payload: {
+      creators: list,
+      action,
+      context: buildFeedbackContext(scope)
+    }
+  }).catch(() => {});
+}
+
+function buildFeedbackContext(scope) {
+  return {
+    source: "sidepanel",
+    scope,
+    briefText: state.briefText || elements.matchBrief.value || "",
+    platform: state.platform,
+    country: state.country,
+    minFollowers: state.minFollowers
   };
 }
 
