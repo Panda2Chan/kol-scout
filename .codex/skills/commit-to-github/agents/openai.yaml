@@ -1,0 +1,4 @@
+interface:
+  display_name: "提交到 GitHub"
+  short_description: "生成中文 changelog、提交并推送 GitHub"
+  default_prompt: "Use $commit-to-github to update the changelog, create a Chinese commit, and push the current project changes."

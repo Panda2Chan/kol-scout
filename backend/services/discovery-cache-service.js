@@ -157,8 +157,18 @@ function normalizeFiltersForCache(filters = {}) {
     maxFakeFollowerRisk: normalizeText(filters.maxFakeFollowerRisk || ""),
     minFollowers: Number(filters.minFollowers || 0),
     minMatchScore: Number(filters.minMatchScore || 0),
-    minQualityScore: Number(filters.minQualityScore || 0)
+    minQualityScore: Number(filters.minQualityScore || 0),
+    requiredGender: normalizeText(filters.requiredGender || ""),
+    requiredRegion: normalizeText(filters.requiredRegion || filters.requiredRegionGroup || ""),
+    basicTraits: normalizeBasicTraits(filters.basicTraits)
   };
+}
+
+function normalizeBasicTraits(traits = []) {
+  return (Array.isArray(traits) ? traits : [])
+    .map((trait) => normalizeText(trait.id || trait))
+    .filter(Boolean)
+    .sort();
 }
 
 function normalizeKeyword(value) {

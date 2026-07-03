@@ -415,6 +415,7 @@ JSON 格式：{"reviews":[{"id":"","semanticScore":0,"evidenceConfidence":0,"col
 4. 店铺、品牌官方、新闻媒体、搬运聚合、bot、成人擦边、抽奖互关账号应 reject=true。
 5. 粉丝数未知只能降低 evidenceConfidence，不能单独作为 reject 理由。
 6. cleanedBio 只能清理模板噪声，不要补写不存在的信息。
+7. Brief 或 filters 中的性别、地区、人群画像是硬约束；候选公开证据不支持或出现反向证据时必须 reject=true。
 `.trim();
 
   const user = [

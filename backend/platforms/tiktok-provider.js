@@ -44,6 +44,7 @@ const DEFAULT_ENRICH_LIMIT = 40;
 const DEFAULT_SOURCE_CONCURRENCY = 3;
 const DEFAULT_QUERY_CONCURRENCY = 3;
 const DEFAULT_ENRICH_CONCURRENCY = 8;
+const DEFAULT_ENRICH_PROFILE_TIMEOUT_MS = 20_000;
 
 export const tiktokProvider = {
   platform: "tiktok",
@@ -234,7 +235,7 @@ async function discoverCreatorsFromFallbackSearch(plan, options = {}) {
       selected: creators.length,
       enrichCount: diagnostics.enriched
     });
-    const enriched = await enrichSearchCandidates(creators, diagnostics.enriched, options.signal, logger);
+    const enriched = await enrichSearchCandidates(creators, diagnostics.enriched, options.signal, logger, options.onCandidate);
     logger?.info("tiktok_fallback.done", {
       stageElapsedMs: Date.now() - startedAt,
       returned: enriched.length,
@@ -825,22 +826,74 @@ function normalizeRelevanceScore(score) {
   return Math.max(0, Math.min(100, numeric <= 1 ? Math.round(numeric * 100) : Math.round(numeric)));
 }
 
-async function enrichSearchCandidates(creators, maxEnrichCount, signal, logger) {
+async function enrichSearchCandidates(creators, maxEnrichCount, signal, logger, onCandidate) {
   const head = creators.slice(0, maxEnrichCount);
   const tail = creators.slice(maxEnrichCount);
   const concurrency = readPositiveInt(process.env.TIKTOK_ENRICH_CONCURRENCY, DEFAULT_ENRICH_CONCURRENCY);
+  const profileTimeoutMs = readPositiveInt(process.env.TIKTOK_ENRICH_PROFILE_TIMEOUT_MS, DEFAULT_ENRICH_PROFILE_TIMEOUT_MS);
   const startedAt = Date.now();
+  let completed = 0;
+  let failed = 0;
   logger?.info("tiktok_enrich.start", {
     candidates: creators.length,
     enrichCount: head.length,
     tailCount: tail.length,
-    concurrency
+    concurrency,
+    profileTimeoutMs
   });
-  const enriched = await mapWithConcurrency(head, concurrency, async (creator) => enrichFromPublicProfile(creator, signal).catch(() => creator));
+  const enriched = await mapWithConcurrency(head, concurrency, async (creator, index) => {
+    const itemStartedAt = Date.now();
+    let nextCreator = creator;
+    try {
+      const itemSignal = createTimeoutSignal(profileTimeoutMs, signal);
+      nextCreator = await withTimeout(
+        enrichFromPublicProfile(creator, itemSignal),
+        profileTimeoutMs + 500,
+        `TikTok 资料补全超过 ${formatElapsedDuration(profileTimeoutMs)}`
+      );
+    } catch (error) {
+      failed += 1;
+      logger?.warn("tiktok_enrich.item_failed", {
+        index,
+        handle: creator.handle || "",
+        profileUrl: creator.profileUrl || "",
+        stageElapsedMs: Date.now() - itemStartedAt,
+        error
+      });
+      nextCreator = {
+        ...creator,
+        enrichment: {
+          ...creator.enrichment,
+          status: creator.enrichment?.status || "partial",
+          error: error.message || "资料补全失败"
+        }
+      };
+    } finally {
+      completed += 1;
+      if (onCandidate) {
+        await Promise.resolve(onCandidate(nextCreator, {
+          index,
+          completed,
+          total: head.length,
+          failed
+        })).catch(() => null);
+      }
+      if (completed === head.length || completed % concurrency === 0) {
+        logger?.info("tiktok_enrich.progress", {
+          stageElapsedMs: Date.now() - startedAt,
+          completed,
+          total: head.length,
+          failed
+        });
+      }
+    }
+    return nextCreator;
+  });
   logger?.info("tiktok_enrich.done", {
     stageElapsedMs: Date.now() - startedAt,
     enriched: enriched.length,
-    returned: enriched.length + tail.length
+    returned: enriched.length + tail.length,
+    failed
   });
   return [...enriched, ...tail];
 }
@@ -859,6 +912,17 @@ async function mapWithConcurrency(items, concurrency, mapper) {
 
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
   return results;
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message || "操作超时")), timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    clearTimeout(timeoutId);
+  });
 }
 
 async function enrichFromPublicProfile(creator, signal) {
@@ -962,13 +1026,14 @@ async function fetchJinaReaderProfile(creator, signal) {
 function parseJinaReaderProfile(markdown, handle) {
   const title = String(markdown || "").match(/^Title:\s*(.+)$/m)?.[1] || "";
   const text = cleanMarkdownProfileText(markdown);
+  const bio = extractJinaProfileBio(markdown);
 
   return {
     name: cleanProfileTitle(title, String(handle || "").replace(/^@/, "")),
-    bio: extractJinaProfileBio(markdown),
+    bio,
     avatarUrl: extractJinaProfileAvatar(markdown),
     followers: inferFollowersFromText(text),
-    contact: buildContactFromText(text),
+    contact: buildContactFromText(`${bio} ${text}`),
     provider: "jina-reader"
   };
 }
@@ -989,6 +1054,13 @@ function isLikelyTikTokAvatar(imageUrl) {
     && !/logo|sprite|icon|api\/img|tiktok_web_pages/i.test(url);
 }
 
+function normalizeProfileAvatarUrl(imageUrl) {
+  const url = decodeHtmlEntities(String(imageUrl || ""));
+  if (!url) return "";
+  if (isLikelyTikTokAvatar(url)) return url;
+  return isUsefulThumbnail(url) ? url : "";
+}
+
 function extractJinaProfileBio(markdown) {
   const lines = String(markdown || "")
     .split("\n")
@@ -998,7 +1070,15 @@ function extractJinaProfileBio(markdown) {
 }
 
 function isTikTokBoilerplateText(text) {
-  return /^(?:\d+\.\s*)?(Title:|URL Source:|Markdown Content:|TikTok$|TikTok Search$|TikTok Shop|Company|Program|Terms|Policies|©|Followers$|Following$|Likes$)/i.test(text)
+  const cleaned = cleanHtmlText(text);
+  const normalized = cleaned
+    .replace(/^tiktok\s*[-·|:]\s*/i, "")
+    .replace(/\s*[-·|:]\s*tiktok$/i, "")
+    .trim()
+    .toLowerCase();
+
+  return normalized === "make your day"
+    || /^(?:\d+\.\s*)?(Title:|URL Source:|Markdown Content:|TikTok$|TikTok Search$|TikTok Shop|Company|Program|Terms|Policies|©|Followers$|Following$|Likes$)/i.test(cleaned)
     || /Browse your favorite items/i.test(text)
     || /Visit TikTok to discover more trending creators/i.test(text)
     || /Skip to content|For You|Following|LIVE|Log in to follow creators/i.test(text)
@@ -1018,17 +1098,128 @@ function parsePublicTikTokProfile(html, handle) {
   const title = getMetaContent(html, "og:title") || getTagContent(html, "title");
   const description = getMetaContent(html, "description") || getMetaContent(html, "og:description");
   const image = getMetaContent(html, "og:image");
-  const cleanDescription = cleanHtmlText(description);
+  const cleanDescription = cleanProfileBio(description);
   const titleText = cleanHtmlText(title);
   const text = cleanHtmlText(`${titleText} ${cleanDescription} ${html}`);
-
-  return {
+  const metaProfile = {
     name: cleanProfileTitle(title, String(handle || "").replace(/^@/, "")),
     bio: cleanDescription,
-    avatarUrl: isLikelyTikTokAvatar(image) ? image : "",
+    avatarUrl: normalizeProfileAvatarUrl(image),
     followers: inferFollowersFromText(text),
-    contact: buildContactFromText(text)
+    contact: buildContactFromText(text),
+    provider: "tiktok-meta-profile"
   };
+  const embeddedProfile = parseTikTokEmbeddedProfile(html, handle);
+
+  return mergeProfileData(metaProfile, embeddedProfile);
+}
+
+function parseTikTokEmbeddedProfile(html, handle) {
+  const rawHandle = String(handle || "").replace(/^@/, "");
+  for (const payload of extractJsonPayloads(html)) {
+    const profile = findEmbeddedTikTokProfile(payload, rawHandle);
+    if (hasProfileData(profile)) return profile;
+  }
+  return {};
+}
+
+function extractJsonPayloads(html) {
+  const payloads = [];
+  for (const match of String(html || "").matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+    const attrs = match[1] || "";
+    const content = decodeHtmlEntities(match[2] || "").trim();
+    if (!content) continue;
+    if (!/type=["']application\/json["']|id=["'](?:SIGI_STATE|__UNIVERSAL_DATA_FOR_REHYDRATION__)["']/i.test(attrs) && !content.startsWith("{")) {
+      continue;
+    }
+    try {
+      payloads.push(JSON.parse(content));
+    } catch {
+      // Ignore non-JSON scripts; TikTok changes script payloads frequently.
+    }
+  }
+  return payloads;
+}
+
+function findEmbeddedTikTokProfile(payload, rawHandle) {
+  const direct = profileFromUserModule(payload?.UserModule, rawHandle);
+  if (hasProfileData(direct)) return direct;
+
+  return findUserInfoProfile(payload, rawHandle) || {};
+}
+
+function profileFromUserModule(userModule, rawHandle) {
+  const users = userModule?.users || {};
+  const stats = userModule?.stats || {};
+  const user = findMatchingUser(Object.values(users), rawHandle);
+  if (!user) return {};
+
+  const userKey = Object.entries(users).find(([, value]) => value === user)?.[0] || rawHandle;
+  const stat = stats[userKey] || stats[user.id] || stats[user.secUid] || {};
+  return buildEmbeddedProfile(user, stat, rawHandle);
+}
+
+function findUserInfoProfile(value, rawHandle, seen = new Set()) {
+  if (!value || typeof value !== "object") return null;
+  if (seen.has(value)) return null;
+  seen.add(value);
+
+  const userInfo = value.userInfo || value.user || null;
+  if (userInfo?.user && userInfo?.stats && isMatchingUser(userInfo.user, rawHandle)) {
+    return buildEmbeddedProfile(userInfo.user, userInfo.stats, rawHandle);
+  }
+  if (value.user && value.stats && isMatchingUser(value.user, rawHandle)) {
+    return buildEmbeddedProfile(value.user, value.stats, rawHandle);
+  }
+
+  for (const item of Object.values(value)) {
+    const profile = findUserInfoProfile(item, rawHandle, seen);
+    if (profile) return profile;
+  }
+  return null;
+}
+
+function findMatchingUser(users, rawHandle) {
+  return users.find((user) => isMatchingUser(user, rawHandle));
+}
+
+function isMatchingUser(user, rawHandle) {
+  const expected = String(rawHandle || "").replace(/^@/, "").toLowerCase();
+  if (!expected || !user || typeof user !== "object") return false;
+  return [
+    user.uniqueId,
+    user.uniqueID,
+    user.handle,
+    user.username,
+    user.nickName,
+    user.nickname
+  ].some((value) => String(value || "").replace(/^@/, "").toLowerCase() === expected);
+}
+
+function buildEmbeddedProfile(user = {}, stats = {}, rawHandle = "") {
+  const bio = cleanProfileBio(user.signature || user.bio || user.desc || "");
+  const avatarUrl = [
+    user.avatarLarger,
+    user.avatarMedium,
+    user.avatarThumb,
+    user.avatarUrl,
+    user.avatar
+  ].map(normalizeProfileAvatarUrl).find(Boolean) || "";
+  const followers = normalizeNumber(stats.followerCount ?? stats.followers ?? stats.fans ?? user.followerCount);
+
+  return {
+    name: cleanProfileTitle(user.nickname || user.nickName || user.displayName || user.uniqueId, rawHandle),
+    bio,
+    avatarUrl,
+    followers,
+    contact: buildContactFromText(`${bio} ${user.email || ""}`),
+    provider: "tiktok-embedded-profile"
+  };
+}
+
+function cleanProfileBio(value) {
+  const text = cleanHtmlText(value);
+  return text && !isTikTokBoilerplateText(text) ? text : "";
 }
 
 function expandSearchTerms(rawText, terms = []) {
@@ -1367,6 +1558,7 @@ export const __testing = {
   candidatePriority,
   attachDiscoveryMeta,
   chunkArray,
+  parsePublicTikTokProfile,
   parseSearchPage,
   readPositiveInt
 };

@@ -1,14 +1,16 @@
 import { downloadCsv } from "../shared/export.js";
-import { createMatchBrief } from "../shared/schema.js";
+import { discoverCreatorsStreamFromBackend } from "../shared/backend-api.js";
+import { createKol, createMatchBrief } from "../shared/schema.js";
+import { getDiscoveryFeedback } from "../shared/storage.js";
 
 const PANEL_STORAGE_KEY = "kolLite.sidePanel";
 const DEFAULT_NOTICE = "输入筛选条件后点击找相似博主。结果先进入候选，手动保存后才进入已保存 list。";
 const LOADING_STEPS = [
   "正在理解筛选需求，生成 KOL 搜索策略...",
-  "正在检索真实创作者主页...",
-  "正在读取公开主页简介、粉丝量、邮箱和头像...",
-  "正在过滤假粉、低质量和低匹配账号...",
-  "正在按匹配度整理候选列表..."
+  "正在检索真实创作者主页并整理候选特征...",
+  "正在按匹配度优先补全头像、简介、粉丝量和邮箱...",
+  "正在过滤资料不足、假粉、低质量和低匹配账号...",
+  "已补全且通过校验的候选会陆续展示..."
 ];
 
 const state = {
@@ -102,20 +104,33 @@ async function discoverCreators() {
   state.country = elements.countrySelect.value;
   state.activeView = "candidates";
   setBusy(true);
+  state.candidates = [];
+  state.summary = null;
   startLoading();
+  render();
 
-  const response = await sendMessage({
-    type: "DISCOVER_CREATORS",
-    payload: {
+  let response;
+  try {
+    const feedback = await getDiscoveryFeedback({ platform: state.platform });
+    response = await discoverCreatorsStreamFromBackend({
       brief,
       platform: state.platform,
       limit: 20,
-      filters: buildDiscoveryFilters()
-    }
-  });
-
-  setBusy(false);
-  stopLoading();
+      filters: buildDiscoveryFilters(),
+      feedback
+    }, {
+      onEvent: handleDiscoveryStreamEvent
+    });
+  } catch (error) {
+    const retainedText = state.candidates.length ? `已保留 ${state.candidates.length} 个已返回候选。` : "";
+    setNotice(`${error.message || "全站匹配失败，请确认本地后端已启动。"}${retainedText}`, "error");
+    await persistState();
+    render();
+    return;
+  } finally {
+    setBusy(false);
+    stopLoading();
+  }
 
   if (!response?.ok) {
     setNotice(response?.error || "全站匹配失败，请确认本地后端已启动。", "error");
@@ -143,6 +158,55 @@ async function discoverCreators() {
 
   await persistState();
   render();
+}
+
+function handleDiscoveryStreamEvent(event) {
+  if (event.event !== "candidate" || !event.candidate) return;
+
+  const candidate = createKol(event.candidate);
+  candidate._streamedAt = Date.now();
+  mergeStreamingCandidate(candidate);
+  render();
+
+  const progress = event.progress || {};
+  const progressText = progress.total
+    ? `（已补全 ${progress.completed || 0}/${progress.total}，已展示 ${progress.shown || state.candidates.length}）`
+    : "";
+  setNotice(`已展示 ${state.candidates.length} 个通过资料校验的候选${progressText}，仍在继续补全...`);
+}
+
+function mergeStreamingCandidate(candidate) {
+  const key = getCandidateKey(candidate);
+  const index = state.candidates.findIndex((item) => getCandidateKey(item) === key);
+  if (index >= 0) {
+    state.candidates[index] = {
+      ...state.candidates[index],
+      ...candidate
+    };
+    sortCandidatesByScore(state.candidates);
+    return;
+  }
+
+  state.candidates.push(candidate);
+  sortCandidatesByScore(state.candidates);
+}
+
+function getCandidateKey(candidate) {
+  return (candidate.id || `${candidate.platform || ""}:${candidate.handle || candidate.profileUrl || ""}`).toLowerCase();
+}
+
+function sortCandidatesByScore(candidates) {
+  candidates.sort((left, right) => {
+    const scoreDiff = getCreatorScore(right) - getCreatorScore(left);
+    if (scoreDiff) return scoreDiff;
+    const followerDiff = Number(right.metrics?.followers || 0) - Number(left.metrics?.followers || 0);
+    if (followerDiff) return followerDiff;
+    return String(left.handle || left.name || "").localeCompare(String(right.handle || right.name || ""));
+  });
+}
+
+function getCreatorScore(creator) {
+  return Number(creator.score ?? creator.match?.score ?? 0);
 }
 
 async function scanCurrentPage() {
@@ -362,6 +426,7 @@ function renderCard(creator) {
   const ignoreButton = fragment.querySelector('[data-action="ignore"]');
 
   card.dataset.id = creator.id || `${creator.platform}:${creator.handle || creator.profileUrl}`;
+  if (isFreshStreamed(creator)) card.classList.add("stream-fresh");
   avatar.textContent = getInitials(creator);
   if (creator.avatarUrl) {
     avatar.style.backgroundImage = `url("${creator.avatarUrl}")`;
@@ -389,6 +454,10 @@ function renderCard(creator) {
   }
 
   return fragment;
+}
+
+function isFreshStreamed(creator) {
+  return creator._streamedAt && Date.now() - creator._streamedAt < 2_800;
 }
 
 function setBusy(busy) {
@@ -426,7 +495,7 @@ function updateLoadingProgress() {
   elements.progressTitle.textContent = stepText;
   elements.progressMeta.textContent = `第 ${state.loadingStep + 1}/${LOADING_STEPS.length} 步 · 已等待 ${elapsedSeconds} 秒`;
   elements.progressBar.style.width = `${percent}%`;
-  setNotice(`${stepText} 请保持侧边栏打开，长任务会自动降级兜底。`);
+  setNotice(`${stepText} 请保持侧边栏打开；超过 10 分钟会自动停止并显示后端错误。`);
   updateProgressStepStates();
 }
 

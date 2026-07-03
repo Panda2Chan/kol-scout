@@ -178,3 +178,66 @@ test("TikTok parser falls back from tag-like titles and keeps snippet as bio evi
   assert.deepEqual(creator.tags, ["颜值", "交友", "黑丝"]);
   assert.equal(stats.parsedCandidates, 1);
 });
+
+test("TikTok parser treats Make Your Day as boilerplate display name", () => {
+  const stats = {
+    rawResults: 0,
+    profileCandidates: 0,
+    parsedCandidates: 0,
+    candidateFiltered: 0,
+    negativeFiltered: 0
+  };
+  const [creator] = __testing.parseSearchPage({
+    sourceProvider: "serper",
+    results: [{
+      url: "https://www.tiktok.com/@pretty.friend",
+      title: "TikTok - Make Your Day",
+      snippet: "颜值 交友 黑丝 creator with 2.5K followers"
+    }]
+  }, "site:tiktok.com/@ 颜值 交友 女 黑丝", {
+    positiveTerms: ["颜值", "交友", "女", "黑丝"],
+    negativeTerms: [],
+    normalizedBrief: { rawText: "颜值,交友,女,黑丝" }
+  }, "serper", stats);
+
+  assert.equal(creator.name, "pretty.friend");
+  assert.equal(creator.metrics.followers, 2500);
+});
+
+test("TikTok public profile parser reads embedded stats and avatar", () => {
+  const profile = __testing.parsePublicTikTokProfile(`
+    <html>
+      <head>
+        <title>TikTok - Make Your Day</title>
+        <script id="SIGI_STATE" type="application/json">
+          {
+            "UserModule": {
+              "users": {
+                "pretty.friend": {
+                  "id": "1",
+                  "uniqueId": "pretty.friend",
+                  "nickname": "Pretty Friend",
+                  "signature": "颜值 交友 黑丝 daily outfits",
+                  "avatarLarger": "https://p16-sign.tiktokcdn-us.com/tos-useast5-avt-0068-tx/avatar.jpeg"
+                }
+              },
+              "stats": {
+                "pretty.friend": {
+                  "followerCount": 3456,
+                  "followingCount": 12,
+                  "heartCount": 78900,
+                  "videoCount": 45
+                }
+              }
+            }
+          }
+        </script>
+      </head>
+    </html>
+  `, "@pretty.friend");
+
+  assert.equal(profile.name, "Pretty Friend");
+  assert.equal(profile.bio, "颜值 交友 黑丝 daily outfits");
+  assert.equal(profile.avatarUrl, "https://p16-sign.tiktokcdn-us.com/tos-useast5-avt-0068-tx/avatar.jpeg");
+  assert.equal(profile.followers, 3456);
+});

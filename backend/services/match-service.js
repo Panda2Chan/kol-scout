@@ -1,3 +1,5 @@
+import { buildTraitSearchTerms, extractBasicTraitConstraints, serializeBasicTraitConstraints } from "./trait-constraints-service.js";
+
 const DEFAULT_BRIEF = {
   rawText: "",
   platforms: [],
@@ -79,8 +81,9 @@ export function matchCreators(briefInput, creators) {
 export function buildCreatorSearchPlan(briefInput = {}, options = {}) {
   const brief = normalizeBrief(briefInput);
   const platform = normalizeSearchPlatform(options.platform || brief.platforms[0] || "x");
-  const negativeTerms = buildNegativeSearchTerms(brief);
-  const positiveTerms = buildPositiveSearchTerms(brief, negativeTerms);
+  const basicTraits = extractBasicTraitConstraints(brief, options.filters || {});
+  const negativeTerms = buildNegativeSearchTerms(brief, basicTraits);
+  const positiveTerms = buildPositiveSearchTerms(brief, negativeTerms, basicTraits);
   const query = buildSearchQuery(positiveTerms, negativeTerms);
 
   return {
@@ -94,7 +97,8 @@ export function buildCreatorSearchPlan(briefInput = {}, options = {}) {
     directProfiles: extractDirectProfiles(brief.rawText, platform),
     normalizedBrief: brief,
     constraints: {
-      followerRange: brief.followerRange
+      followerRange: brief.followerRange,
+      basicTraits: serializeBasicTraitConstraints(basicTraits)
     },
     notes: buildSearchNotes(brief)
   };
@@ -295,22 +299,41 @@ function expandCreatorKeywords(keywords, text) {
   return unique(expanded).slice(0, 16);
 }
 
-function buildPositiveSearchTerms(brief, negativeTerms = []) {
+function buildPositiveSearchTerms(brief, negativeTerms = [], basicTraits = []) {
   const negativeSet = new Set(negativeTerms);
+  const traitTerms = buildTraitSearchTerms(basicTraits);
   return unique([
+    ...buildCompositeTraitTerms(brief.rawText, basicTraits),
+    ...traitTerms.positiveTerms,
     ...brief.creatorKeywords,
     ...extractFreeformSearchTerms(brief.rawText),
     ...inferPersonaTerms(brief.rawText)
   ])
     .filter((term) => !negativeSet.has(term))
-    .slice(0, 9);
+    .slice(0, 24);
 }
 
-function buildNegativeSearchTerms(brief) {
+function buildNegativeSearchTerms(brief, basicTraits = []) {
+  const traitTerms = buildTraitSearchTerms(basicTraits);
   return unique([
+    ...traitTerms.negativeTerms,
     ...brief.excludeKeywords,
     ...extractExplicitExcludeTerms(brief.rawText.toLowerCase())
-  ]).slice(0, 6);
+  ]).slice(0, 24);
+}
+
+function buildCompositeTraitTerms(text, basicTraits = []) {
+  const terms = [];
+  const categories = new Set((basicTraits || []).map((trait) => trait.id));
+  const lower = String(text || "").toLowerCase();
+
+  if (categories.has("region:asian") && categories.has("gender:female")) {
+    terms.push("asian female", "asian girl");
+  }
+  if (categories.has("region:asian") && /coser|cosplay|cosplayer|二次元|角色扮演|\bcos\b/i.test(lower)) {
+    terms.push("asian coser", "asian cosplay");
+  }
+  return terms;
 }
 
 function buildSearchQuery(positiveTerms, negativeTerms) {

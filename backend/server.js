@@ -87,6 +87,89 @@ const server = createServer(async (req, res) => {
       });
     }
 
+    if (req.method === "POST" && url.pathname === "/api/discover/creators/stream") {
+      requestLogger = createRequestLogger("discover-api", {
+        method: req.method,
+        route: url.pathname
+      });
+      const controller = new AbortController();
+      req.on("aborted", () => {
+        requestLogger?.warn("request.client_aborted");
+        controller.abort(new Error("client aborted"));
+      });
+      res.on("close", () => {
+        if (!res.writableEnded) {
+          requestLogger?.warn("response.closed_before_end", {
+            writableEnded: res.writableEnded
+          });
+          controller.abort(new Error("response closed"));
+        }
+      });
+
+      const body = await readJson(req);
+      const platform = body.platform || "x";
+      requestLogger.info("request.stream_start", {
+        platform,
+        limit: body.limit || 20,
+        briefLength: getBriefLength(body.brief),
+        filters: summarizeFilters(body.filters || {}),
+        feedbackItems: Array.isArray(body.feedback?.items) ? body.feedback.items.length : 0,
+        searchProviders: getSearchProviderStatus()
+      });
+
+      sendJsonStreamHeaders(res);
+      writeStreamEvent(res, "start", {
+        ok: true,
+        requestId: requestLogger.requestId,
+        platform
+      });
+
+      try {
+        const result = await discoverCreators(body.brief || {}, registry, {
+          platform,
+          locale: body.locale || "zh-CN",
+          limit: body.limit || 20,
+          filters: body.filters || {},
+          feedback: body.feedback || {},
+          signal: controller.signal,
+          logger: requestLogger.child({ component: "discovery-service" }),
+          onCandidate: (candidate, progress) => {
+            writeStreamEvent(res, "candidate", {
+              requestId: requestLogger.requestId,
+              candidate,
+              progress
+            });
+          }
+        });
+
+        requestLogger.info("request.stream_success", {
+          statusCode: 200,
+          candidates: result.candidates?.length || 0,
+          totalFetched: result.summary?.totalFetched || 0,
+          rawFetched: result.summary?.rawFetched || 0,
+          dataSource: result.summary?.dataSource || "",
+          aiReviewEnabled: Boolean(result.summary?.aiReview?.enabled)
+        });
+        writeStreamEvent(res, "complete", { ok: true, requestId: requestLogger.requestId, ...result });
+        return res.end();
+      } catch (error) {
+        const statusCode = error.statusCode || 500;
+        requestLogger?.[error.code === "DISCOVERY_EMPTY" ? "warn" : "error"]?.("request.stream_error", {
+          statusCode,
+          code: error.code || "INTERNAL_ERROR",
+          error
+        });
+        writeStreamEvent(res, "error", {
+          ok: false,
+          requestId: requestLogger.requestId,
+          error: error.message,
+          code: error.code || "INTERNAL_ERROR",
+          statusCode
+        });
+        return res.end();
+      }
+    }
+
     if (req.method === "POST" && url.pathname === "/api/discover/creators") {
       requestLogger = createRequestLogger("discover-api", {
         method: req.method,
@@ -143,6 +226,16 @@ const server = createServer(async (req, res) => {
       code: error.code || "INTERNAL_ERROR",
       error
     });
+    if (res.headersSent) {
+      writeStreamEvent(res, "error", {
+        ok: false,
+        requestId: requestLogger?.requestId,
+        error: error.message,
+        code: error.code || "INTERNAL_ERROR",
+        statusCode
+      });
+      return res.end();
+    }
     return sendJson(res, statusCode, {
       ok: false,
       requestId: requestLogger?.requestId,
@@ -177,6 +270,24 @@ function sendJson(res, statusCode, payload) {
   }
 
   res.end(JSON.stringify(payload));
+}
+
+function sendJsonStreamHeaders(res) {
+  res.writeHead(200, {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "content-type",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "Content-Type": "application/x-ndjson; charset=utf-8",
+    "X-Accel-Buffering": "no"
+  });
+  res.flushHeaders?.();
+}
+
+function writeStreamEvent(res, event, payload = {}) {
+  if (res.destroyed || res.writableEnded) return;
+  res.write(`${JSON.stringify({ event, ...payload })}\n`);
 }
 
 function getSearchProviderStatus() {

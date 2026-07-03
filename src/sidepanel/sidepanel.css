@@ -279,7 +279,9 @@ select:focus {
   width: 8%;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #276ef1, #00a28a);
+  background: linear-gradient(90deg, #276ef1, #00a28a, #276ef1);
+  background-size: 180px 100%;
+  animation: progress-flow 1.2s linear infinite;
   transition: width 260ms ease;
 }
 
@@ -355,6 +357,12 @@ select:focus {
   border: 1px solid #e1e6ef;
   border-radius: 12px;
   background: #ffffff;
+}
+
+.creator-card.stream-fresh {
+  border-color: #a7f3d0;
+  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.12);
+  animation: stream-card-in 380ms ease-out;
 }
 
 .card-head {
@@ -458,4 +466,26 @@ select:focus {
   cursor: pointer;
   font-size: 12px;
   font-weight: 900;
+}
+
+@keyframes progress-flow {
+  from {
+    background-position: 0 0;
+  }
+
+  to {
+    background-position: 180px 0;
+  }
+}
+
+@keyframes stream-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

@@ -11,6 +11,11 @@ import {
   setThirdPartyDiscoveryCache,
   setThirdPartyDiscoveryErrorCache
 } from "./discovery-cache-service.js";
+import {
+  extractBasicTraitConstraints,
+  serializeBasicTraitConstraints,
+  validateBasicTraitConstraints
+} from "./trait-constraints-service.js";
 
 const DEFAULT_FILTERS = {
   minMatchScore: 50,
@@ -73,6 +78,7 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
   const filters = normalizeFilters(options.filters || {}, brief);
   const feedbackSummary = summarizeFeedback(options.feedback, platform);
   const fallbackPlan = buildCreatorSearchPlan(brief, { platform, locale: options.locale || "zh-CN" });
+  const emittedCandidateIds = new Set();
   logDiscovery(logger, "discovery.start", startedAt, {
     platform,
     provider: provider.sourceName || "unknown",
@@ -110,7 +116,10 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
     filters,
     locale: options.locale || "zh-CN",
     signal: totalSignal,
-    logger: providerLogger
+    logger: providerLogger,
+    onCandidate: options.onCandidate
+      ? (creator, progress) => emitStreamingCandidate(creator, progress)
+      : null
   };
   let aiWebSearch = null;
   let sourceDiagnostics = null;
@@ -286,34 +295,9 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
   );
   const matchById = new Map(matchCreators(brief, normalized).map((item) => [item.creatorId, item.match]));
 
-  const ruleAnalyzed = normalized.map((creator) => {
-    const baseMatch = matchById.get(creator.id) || {};
-    const quality = analyzeCreatorQuality(creator);
-    const followerUnknownPenalty = getUnknownFollowerPenalty(creator, filters);
-    const finalScore = calculateFinalScore(baseMatch.score || 0, quality, followerUnknownPenalty);
-    const followerUnknownConcern = followerUnknownPenalty ? ["粉丝数未知，已降权保留"] : [];
-
-    return {
-      ...creator,
-      quality,
-      match: {
-        ...baseMatch,
-        score: finalScore,
-        provider: "discovery-rules-v1",
-        reasons: buildDiscoveryReasons(baseMatch, quality),
-        concerns: [...(baseMatch.concerns || []), ...quality.concerns, ...followerUnknownConcern],
-        dimensions: {
-          ...(baseMatch.dimensions || {}),
-          baseMatch: baseMatch.score || 0,
-          quality: quality.score,
-          followerUnknownPenalty,
-          sourceRelevance: creator.relevanceScore ?? creator.discovery?.relevanceScore ?? null,
-          fakeFollowerRisk: quality.fakeFollowerRisk
-        }
-      },
-      score: finalScore
-    };
-  });
+  const ruleAnalyzed = normalized.map((creator) =>
+    buildRuleAnalyzedCreator(creator, matchById.get(creator.id) || {}, filters)
+  );
   let aiReview = null;
   let analyzed = applyPostProcessingScores(ruleAnalyzed, feedbackSummary);
   logDiscovery(logger, "rules_analysis.done", stageStartedAt, {
@@ -433,6 +417,76 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
       aiReview
     }
   };
+
+  async function emitStreamingCandidate(rawCreator, progress = {}) {
+    if (!options.onCandidate || !rawCreator) return;
+
+    const normalizedCreator = normalizeDiscoveredCreator(rawCreator, platform);
+    if (!normalizedCreator.id || emittedCandidateIds.has(normalizedCreator.id)) return;
+
+    const baseMatch = matchCreators(brief, [normalizedCreator])[0]?.match || {};
+    const ruleCandidate = buildRuleAnalyzedCreator(normalizedCreator, baseMatch, filters);
+    const candidate = applyPostProcessingScores([ruleCandidate], feedbackSummary)[0];
+    const reason = getFilteredReason(candidate, filters);
+    if (reason) {
+      logDiscovery(logger, "stream.candidate_skipped", startedAt, {
+        candidateId: candidate.id,
+        handle: candidate.handle || "",
+        reason,
+        progress
+      });
+      return;
+    }
+
+    emittedCandidateIds.add(candidate.id);
+    await Promise.resolve(options.onCandidate({
+      ...candidate,
+      streaming: {
+        provisional: true,
+        stage: "provider-enriched",
+        progress: {
+          ...progress,
+          shown: emittedCandidateIds.size
+        }
+      }
+    }, {
+      ...progress,
+      shown: emittedCandidateIds.size
+    })).catch((error) => {
+      logDiscovery(logger, "stream.candidate_emit_failed", startedAt, {
+        candidateId: candidate.id,
+        error
+      }, "warn");
+    });
+  }
+}
+
+function buildRuleAnalyzedCreator(creator, baseMatch = {}, filters = DEFAULT_FILTERS) {
+  const quality = analyzeCreatorQuality(creator);
+  const followerUnknownPenalty = getUnknownFollowerPenalty(creator, filters);
+  const finalScore = calculateFinalScore(baseMatch.score || 0, quality, followerUnknownPenalty);
+  const followerUnknownConcern = followerUnknownPenalty ? ["粉丝数未知，已降权处理"] : [];
+
+  return {
+    ...creator,
+    quality,
+    match: {
+      ...baseMatch,
+      score: finalScore,
+      provider: "discovery-rules-v1",
+      reasons: buildDiscoveryReasons(baseMatch, quality),
+      concerns: [...(baseMatch.concerns || []), ...quality.concerns, ...followerUnknownConcern],
+      dimensions: {
+        ...(baseMatch.dimensions || {}),
+        baseMatch: baseMatch.score || 0,
+        quality: quality.score,
+        followerUnknownPenalty,
+        sourceRelevance: creator.relevanceScore ?? creator.discovery?.relevanceScore ?? null,
+        fakeFollowerRisk: quality.fakeFollowerRisk
+      }
+    },
+    score: finalScore
+  };
 }
 
 function readTimeoutMs(value, fallback) {
@@ -453,6 +507,7 @@ function summarizeLogFilters(filters = {}) {
     minMatchScore: filters.minMatchScore ?? null,
     minQualityScore: filters.minQualityScore ?? null,
     minFollowers: filters.minFollowers ?? null,
+    basicTraits: serializeBasicTraitConstraints(filters.basicTraits || []),
     country: filters.country || "",
     maxFakeFollowerRisk: filters.maxFakeFollowerRisk || ""
   };
@@ -556,6 +611,12 @@ export function analyzeCreatorQuality(creator) {
     concerns.push("搜索结果缺少可验证的主题命中");
   }
 
+  if (creator.platform === "tiktok" && creator.discovery?.kind === "web-search" && !hasVerifiedProfileEnrichment(creator)) {
+    score -= 24;
+    fakeFollowerRisk = maxRisk(fakeFollowerRisk, "medium");
+    concerns.push("公开主页资料未补全，无法验证创作者身份");
+  }
+
   if (engagementRate != null) {
     if (engagementRate >= 0.02) {
       score += 12;
@@ -648,7 +709,7 @@ function normalizeDiscoveredCreator(input, platform) {
   return {
     id: input.id || `${platform}:${handle || input.profileUrl || input.name}`.toLowerCase(),
     platform,
-    name: input.name || handle || "Unknown creator",
+    name: cleanCreatorName(input.name, handle),
     handle,
     profileUrl: input.profileUrl || buildProfileUrl(platform, rawHandle),
     avatarUrl: input.avatarUrl || "",
@@ -695,6 +756,12 @@ function cleanCreatorBio(value) {
   return isBoilerplateProfileText(text) ? "" : text;
 }
 
+function cleanCreatorName(value, fallback) {
+  const text = String(value || "").trim();
+  if (!text || isBoilerplateProfileText(text)) return fallback || "Unknown creator";
+  return text;
+}
+
 function cleanEvidenceText(value) {
   return String(value || "")
     .split(/\r?\n|;\s*/)
@@ -704,7 +771,16 @@ function cleanEvidenceText(value) {
 }
 
 function isBoilerplateProfileText(text) {
-  return /Browse your favorite items/i.test(text)
+  const cleaned = String(text || "").trim();
+  const normalized = cleaned
+    .replace(/^tiktok\s*[-·|:]\s*/i, "")
+    .replace(/\s*[-·|:]\s*tiktok$/i, "")
+    .trim()
+    .toLowerCase();
+
+  return normalized === "make your day"
+    || /^keywords?\s*:/i.test(cleaned)
+    || /Browse your favorite items/i.test(cleaned)
     || /TikTok Shop is now available/i.test(text)
     || /Visit TikTok to discover more trending creators/i.test(text)
     || /Skip to content|For You|Following|LIVE|Log in to follow creators/i.test(text);
@@ -729,18 +805,20 @@ function getFilteredReason(creator, filters) {
   if (creator.aiReview?.reject && (creator.aiReview?.semanticScore ?? 0) < 50) {
     return creator.aiReview.rejectReason || "AI复核不推荐";
   }
+  const traitValidation = validateBasicTraitConstraints(creator, filters.basicTraits || []);
+  if (traitValidation?.reason) return traitValidation.reason;
   if (creator.quality?.concerns?.some((concern) => concern.includes("品牌号"))) return "疑似品牌号";
   if (creator.quality?.concerns?.some((concern) => concern.includes("搬运") || concern.includes("商品"))) return "疑似聚合或商品号";
   if (creator.quality?.concerns?.some((concern) => concern.includes("无法验证创作者身份"))) return "信息不足";
   if (creator.quality?.concerns?.some((concern) => concern.includes("标题解析异常"))) return "信息不足";
   if (creator.discovery?.kind === "web-search" && !(creator.tags || []).length) return "低匹配度";
+  if (filters.minFollowers && creator.metrics?.followers == null) {
+    return "粉丝数未知";
+  }
+  if (!creator.profileUrl) return "缺少主页";
   if (!hasMinimumProfileEvidence(creator)) return "信息不足";
   if ((creator.match?.score || 0) < filters.minMatchScore) {
     return "低匹配度";
-  }
-  if (filters.minFollowers && creator.metrics?.followers == null) {
-    if (creator.platform === "tiktok") return "";
-    return "粉丝数未知";
   }
   if (filters.minFollowers && creator.metrics?.followers != null && Number(creator.metrics.followers) < filters.minFollowers) {
     return "粉丝数不足";
@@ -754,6 +832,8 @@ function getFilteredReason(creator, filters) {
 
 function hasMinimumProfileEvidence(creator) {
   if (creator.platform !== "tiktok" || creator.discovery?.kind !== "web-search") return true;
+  if (!isValidTikTokProfileUrl(creator.profileUrl)) return false;
+  if (!hasVerifiedProfileEnrichment(creator)) return false;
 
   const signals = [
     Boolean(creator.bio && creator.bio.length >= 20),
@@ -764,6 +844,22 @@ function hasMinimumProfileEvidence(creator) {
   ].filter(Boolean).length;
 
   return signals >= MIN_TIKTOK_WEB_PROFILE_SIGNALS;
+}
+
+function hasVerifiedProfileEnrichment(creator) {
+  const status = String(creator.enrichment?.status || "").toLowerCase();
+  return status === "ready" || status === "enriched";
+}
+
+function isValidTikTokProfileUrl(profileUrl = "") {
+  try {
+    const url = new URL(profileUrl);
+    const host = url.hostname.replace(/^www\./, "").toLowerCase();
+    return (host === "tiktok.com" || host === "m.tiktok.com")
+      && /^\/@[A-Za-z0-9._]{2,24}(?:\/)?$/.test(decodeURIComponent(url.pathname));
+  } catch {
+    return false;
+  }
 }
 
 function isLikelyBrandAccount(creator, haystack) {
@@ -795,6 +891,7 @@ function normalizeFilters(filters, brief = {}) {
     ...DEFAULT_FILTERS,
     ...filters,
     minFollowers: Math.max(0, Number(minFollowers) || 0),
+    basicTraits: extractBasicTraitConstraints(brief, filters),
     maxFakeFollowerRisk: filters.maxFakeFollowerRisk || DEFAULT_FILTERS.maxFakeFollowerRisk
   };
 }
@@ -1007,6 +1104,7 @@ export const __testing = {
   getFilteredReason,
   hasMinimumProfileEvidence,
   getUnknownFollowerPenalty,
+  normalizeFilters,
   serializeFeedbackSummary,
   summarizeFeedback
 };

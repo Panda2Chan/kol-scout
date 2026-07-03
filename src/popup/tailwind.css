@@ -143,7 +143,9 @@
   .progress-track span {
     @apply block h-full rounded-full transition-all duration-300;
     width: 8%;
-    background: linear-gradient(90deg, #276ef1, #16837a);
+    background: linear-gradient(90deg, #276ef1, #16837a, #276ef1);
+    background-size: 180px 100%;
+    animation: progress-flow 1.2s linear infinite;
   }
 
   .progress-steps {
@@ -185,6 +187,12 @@
 
   .kol-card {
     @apply grid grid-cols-[44px_1fr] gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm;
+  }
+
+  .kol-card.stream-fresh {
+    animation: stream-card-in 380ms ease-out;
+    border-color: #a7f3d0;
+    box-shadow: 0 10px 24px rgba(15, 118, 110, 0.12);
   }
 
   .avatar {
@@ -263,5 +271,27 @@
 
   .profile-link {
     @apply mr-auto text-xs font-bold text-brand no-underline hover:text-blue-700;
+  }
+
+  @keyframes progress-flow {
+    from {
+      background-position: 0 0;
+    }
+
+    to {
+      background-position: 180px 0;
+    }
+  }
+
+  @keyframes stream-card-in {
+    from {
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 }

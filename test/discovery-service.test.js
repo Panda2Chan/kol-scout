@@ -31,7 +31,7 @@ test("TikTok discovery fetch limit keeps a large raw recall pool", () => {
   assert.equal(__testing.calculateDiscoveryFetchLimit("x", 20), 60);
 });
 
-test("TikTok unknown followers are kept with a penalty instead of hard-filtered", () => {
+test("TikTok unknown followers are filtered when a follower floor is required", () => {
   const filters = {
     minFollowers: 10000,
     minMatchScore: 50,
@@ -40,6 +40,7 @@ test("TikTok unknown followers are kept with a penalty instead of hard-filtered"
   };
   const baseCreator = {
     platform: "tiktok",
+    profileUrl: "https://www.tiktok.com/@beauty.creator",
     discovery: { kind: "third-party-search" },
     metrics: { followers: null },
     match: { score: 75, dimensions: { baseMatch: 75 } },
@@ -47,7 +48,7 @@ test("TikTok unknown followers are kept with a penalty instead of hard-filtered"
     tags: ["beauty", "review"]
   };
 
-  assert.equal(__testing.getFilteredReason(baseCreator, filters), "");
+  assert.equal(__testing.getFilteredReason(baseCreator, filters), "粉丝数未知");
   assert.equal(__testing.getUnknownFollowerPenalty(baseCreator, filters), 6);
   assert.equal(
     __testing.getFilteredReason({ ...baseCreator, platform: "x" }, filters),
@@ -112,22 +113,33 @@ test("feedback summary boosts preferred tags and serializes without Sets", () =>
   assert.equal(serialized.saved, 1);
 });
 
-test("TikTok web-search candidates need enough profile evidence", () => {
+test("TikTok web-search candidates need verified profile evidence", () => {
   const bareCreator = {
     platform: "tiktok",
+    profileUrl: "https://www.tiktok.com/@pretty.friend",
     discovery: { kind: "web-search" },
+    enrichment: { status: "partial" },
     metrics: { followers: null },
     tags: ["颜值", "黑丝"],
     bio: "",
     avatarUrl: "",
     contact: {}
   };
+  const snippetOnlyCreator = {
+    ...bareCreator,
+    bio: "Keywords: Harley Quinn cosplay Halloween ideas, Asian girl cosplay",
+    tags: ["cosplay", "asian"]
+  };
   const enrichedCreator = {
     ...bareCreator,
-    bio: "颜值 交友 黑丝 fashion creator with daily outfit videos"
+    enrichment: { status: "ready" },
+    bio: "颜值 交友 黑丝 fashion creator with daily outfit videos",
+    avatarUrl: "https://p16-sign.tiktokcdn-us.com/tos-useast5-avt-0068-tx/avatar.jpeg",
+    metrics: { followers: 12000 }
   };
 
   assert.equal(__testing.hasMinimumProfileEvidence(bareCreator), false);
+  assert.equal(__testing.hasMinimumProfileEvidence(snippetOnlyCreator), false);
   assert.equal(__testing.hasMinimumProfileEvidence(enrichedCreator), true);
 });
 
@@ -140,15 +152,128 @@ test("Low-score TikTok candidates do not bypass the minimum match score", () => 
   };
   const creator = {
     platform: "tiktok",
+    profileUrl: "https://www.tiktok.com/@pretty.friend",
     discovery: { kind: "web-search" },
-    metrics: { followers: null },
+    enrichment: { status: "ready" },
+    metrics: { followers: 3000 },
     tags: ["颜值", "黑丝"],
     bio: "颜值 交友 黑丝 fashion creator with daily outfit videos",
-    avatarUrl: "",
+    avatarUrl: "https://p16-sign.tiktokcdn-us.com/tos-useast5-avt-0068-tx/avatar.jpeg",
     contact: {},
     match: { score: 0, dimensions: { baseMatch: 0 } },
     quality: { score: 72, fakeFollowerRisk: "low", concerns: [] }
   };
 
   assert.equal(__testing.getFilteredReason(creator, filters), "低匹配度");
+});
+
+test("Basic trait constraints reject candidates with opposite gender evidence", () => {
+  const filters = __testing.normalizeFilters({
+    minFollowers: 10000,
+    minMatchScore: 50,
+    minQualityScore: 55,
+    maxFakeFollowerRisk: "medium",
+    requiredGender: "female"
+  });
+  const creator = {
+    platform: "tiktok",
+    name: "Male Coser",
+    handle: "@male.coser",
+    bio: "male coser and cosplay creator with daily costume videos",
+    discovery: {
+      kind: "web-search",
+      evidenceText: "title: Male Coser on TikTok; snippet: male cosplay creator"
+    },
+    metrics: { followers: 30000 },
+    tags: ["coser", "cosplay"],
+    contact: {},
+    match: { score: 82, dimensions: { baseMatch: 82 } },
+    quality: { score: 76, fakeFollowerRisk: "low", concerns: [] }
+  };
+
+  assert.equal(__testing.getFilteredReason(creator, filters), "基础特征不匹配：女性");
+});
+
+test("Basic trait constraints reject candidates with opposite region evidence", () => {
+  const filters = __testing.normalizeFilters({
+    minFollowers: 10000,
+    minMatchScore: 50,
+    minQualityScore: 55,
+    maxFakeFollowerRisk: "medium",
+    requiredRegion: "asian"
+  });
+  const creator = {
+    platform: "tiktok",
+    profileUrl: "https://www.tiktok.com/@euro.coser",
+    name: "European Coser",
+    handle: "@euro.coser",
+    bio: "European cosplay creator with daily costume videos",
+    discovery: {
+      kind: "web-search",
+      evidenceText: "title: European Coser on TikTok; snippet: caucasian cosplay creator"
+    },
+    enrichment: { status: "ready" },
+    metrics: { followers: 30000 },
+    tags: ["coser", "cosplay"],
+    contact: {},
+    match: { score: 82, dimensions: { baseMatch: 82 } },
+    quality: { score: 76, fakeFollowerRisk: "low", concerns: [] }
+  };
+
+  assert.equal(__testing.getFilteredReason(creator, filters), "基础特征不匹配：亚洲/亚裔");
+});
+
+test("Basic trait constraints do not accept search-only keywords as profile proof", () => {
+  const filters = __testing.normalizeFilters({
+    minFollowers: 10000,
+    minMatchScore: 50,
+    minQualityScore: 55,
+    maxFakeFollowerRisk: "medium",
+    requiredRegion: "asian"
+  });
+  const creator = {
+    platform: "tiktok",
+    profileUrl: "https://www.tiktok.com/@cosplay.creator",
+    name: "Cosplay Creator",
+    handle: "@cosplay.creator",
+    bio: "Cosplay creator with daily costume videos and makeup transitions",
+    discovery: {
+      kind: "web-search",
+      evidenceText: "snippet: Keywords: Harley Quinn cosplay Halloween ideas, Asian girl cosplay"
+    },
+    enrichment: { status: "ready" },
+    metrics: { followers: 30000 },
+    tags: ["coser", "cosplay", "asian"],
+    contact: {},
+    match: { score: 82, dimensions: { baseMatch: 82 } },
+    quality: { score: 76, fakeFollowerRisk: "low", concerns: [] }
+  };
+
+  assert.equal(__testing.getFilteredReason(creator, filters), "基础特征证据不足：亚洲/亚裔");
+});
+
+test("Basic trait constraints accept candidates with profile-level trait evidence", () => {
+  const filters = __testing.normalizeFilters({
+    minFollowers: 10000,
+    minMatchScore: 50,
+    minQualityScore: 55,
+    maxFakeFollowerRisk: "medium",
+    requiredRegion: "asian"
+  });
+  const creator = {
+    platform: "tiktok",
+    profileUrl: "https://www.tiktok.com/@asian.coser",
+    name: "Asian Coser",
+    handle: "@asian.coser",
+    bio: "Asian cosplay creator with daily costume videos and makeup transitions",
+    discovery: { kind: "web-search", evidenceText: "snippet: cosplay creator" },
+    enrichment: { status: "ready" },
+    metrics: { followers: 30000 },
+    tags: ["coser", "cosplay"],
+    contact: {},
+    match: { score: 82, dimensions: { baseMatch: 82 } },
+    quality: { score: 76, fakeFollowerRisk: "low", concerns: [] }
+  };
+
+  assert.equal(__testing.getFilteredReason(creator, filters), "");
 });

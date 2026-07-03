@@ -1,6 +1,8 @@
 import { downloadCsv, downloadJson } from "../shared/export.js";
+import { discoverCreatorsStreamFromBackend } from "../shared/backend-api.js";
 import { PLATFORM_LABELS, createKol, createMatchBrief } from "../shared/schema.js";
 import {
+  getDiscoveryFeedback,
   getMatchBrief,
   getKols,
   recordDiscoveryFeedback,
@@ -22,10 +24,10 @@ const state = {
 
 const DISCOVERY_LOADING_STEPS = [
   "正在理解你的筛选需求，生成 KOL 搜索策略...",
-  "正在检索真实创作者主页...",
-  "正在读取公开简介、粉丝量和邮箱...",
-  "正在过滤品牌号、低质号和低匹配账号...",
-  "正在按匹配度整理候选列表..."
+  "正在检索真实创作者主页并整理候选特征...",
+  "正在按匹配度优先补全头像、简介、粉丝量和邮箱...",
+  "正在过滤资料不足、品牌号、低质号和低匹配账号...",
+  "已补全且通过校验的候选会陆续展示..."
 ];
 
 const elements = {
@@ -163,20 +165,30 @@ async function discoverCreators() {
   await setMatchBrief(brief);
   state.platform = normalizePlatform(elements.platformSelect.value, brief.rawText);
   setBusy(true, "匹配中");
+  state.candidates = [];
+  render();
   startDiscoveryLoading();
 
-  const response = await chrome.runtime.sendMessage({
-    type: "DISCOVER_CREATORS",
-    payload: {
+  let response;
+  try {
+    const feedback = await getDiscoveryFeedback({ platform: state.platform });
+    response = await discoverCreatorsStreamFromBackend({
       brief,
       platform: state.platform,
       limit: 20,
-      filters: buildDiscoveryFilters()
-    }
-  });
-
-  setBusy(false);
-  stopDiscoveryLoading();
+      filters: buildDiscoveryFilters(),
+      feedback
+    }, {
+      onEvent: handleDiscoveryStreamEvent
+    });
+  } catch (error) {
+    const retainedText = state.candidates.length ? `已保留 ${state.candidates.length} 个已返回候选。` : "";
+    setNotice(`${error.message || "全站匹配失败，请确认后端或三方数据源已启动。"}${retainedText}`, "error");
+    return;
+  } finally {
+    setBusy(false);
+    stopDiscoveryLoading();
+  }
 
   if (!response?.ok) {
     setNotice(response?.error || "全站匹配失败，请确认后端或三方数据源已启动。", "error");
@@ -203,6 +215,55 @@ async function discoverCreators() {
     `全站匹配完成：${aiStatus}，保留 ${state.candidates.length} 个，过滤 ${summary.filtered || 0} 个低质/低匹配账号。`,
     "success"
   );
+}
+
+function handleDiscoveryStreamEvent(event) {
+  if (event.event !== "candidate" || !event.candidate) return;
+
+  const candidate = createKol(event.candidate);
+  candidate._streamedAt = Date.now();
+  mergeStreamingCandidate(candidate);
+  render();
+
+  const progress = event.progress || {};
+  const progressText = progress.total
+    ? `（已补全 ${progress.completed || 0}/${progress.total}，已展示 ${progress.shown || state.candidates.length}）`
+    : "";
+  setNotice(`已展示 ${state.candidates.length} 个通过资料校验的候选${progressText}，仍在继续补全...`);
+}
+
+function mergeStreamingCandidate(candidate) {
+  const key = getCandidateKey(candidate);
+  const index = state.candidates.findIndex((item) => getCandidateKey(item) === key);
+  if (index >= 0) {
+    state.candidates[index] = {
+      ...state.candidates[index],
+      ...candidate
+    };
+    sortCandidatesByScore(state.candidates);
+    return;
+  }
+
+  state.candidates.push(candidate);
+  sortCandidatesByScore(state.candidates);
+}
+
+function getCandidateKey(candidate) {
+  return (candidate.id || `${candidate.platform || ""}:${candidate.handle || candidate.profileUrl || ""}`).toLowerCase();
+}
+
+function sortCandidatesByScore(candidates) {
+  candidates.sort((left, right) => {
+    const scoreDiff = getCreatorScore(right) - getCreatorScore(left);
+    if (scoreDiff) return scoreDiff;
+    const followerDiff = Number(right.metrics?.followers || 0) - Number(left.metrics?.followers || 0);
+    if (followerDiff) return followerDiff;
+    return String(left.handle || left.name || "").localeCompare(String(right.handle || right.name || ""));
+  });
+}
+
+function getCreatorScore(creator) {
+  return Number(creator.score ?? creator.match?.score ?? 0);
 }
 
 function formatFilteredReasons(reasons = {}) {
@@ -251,7 +312,7 @@ function updateDiscoveryProgress() {
   elements.progressTitle.textContent = stepText;
   elements.progressMeta.textContent = `${state.loadingStep + 1}/${DISCOVERY_LOADING_STEPS.length} · ${elapsedSeconds} 秒`;
   elements.progressBar.style.width = `${percent}%`;
-  setNotice(`${stepText} 请保持弹窗打开，AI 慢时会自动使用规则兜底。`);
+  setNotice(`${stepText} 请保持弹窗打开；超过 10 分钟会自动停止并显示后端错误。`);
   updateProgressStepStates();
 }
 
@@ -340,6 +401,7 @@ function renderCard(kol, options) {
   const contactButton = fragment.querySelector(".contact-one");
   const profileLink = fragment.querySelector(".profile-link");
 
+  if (isFreshStreamed(kol)) card.classList.add("stream-fresh");
   fragment.querySelector(".kol-name").textContent = kol.name || kol.handle || "Unknown creator";
   fragment.querySelector(".score").textContent = `${kol.score || 0} 分`;
   fragment.querySelector(".meta").textContent = buildMeta(kol);
@@ -397,6 +459,10 @@ function renderCard(kol, options) {
   }
 
   return fragment;
+}
+
+function isFreshStreamed(kol) {
+  return kol._streamedAt && Date.now() - kol._streamedAt < 2_800;
 }
 
 async function openCreatorProfile(profileUrl) {
