@@ -1,26 +1,33 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="system">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>KOL Lite</title>
+    <title>KOL Scout</title>
     <link rel="stylesheet" href="./sidepanel.css" />
   </head>
   <body>
     <main class="app-shell">
       <header class="topbar">
-        <div>
-          <strong>KOL Lite</strong>
-          <span>创作者全站匹配</span>
+        <div class="brand-block">
+          <img class="brand-icon" src="../../assets/icons/icon-48.png" alt="" aria-hidden="true" />
+          <div class="brand-copy">
+            <strong>KOL Scout</strong>
+            <span>帮出海团队快速找到海外 KOL</span>
+          </div>
         </div>
-        <button class="text-btn" type="button" id="scanButton">扫描当前页</button>
-        <button class="text-btn" type="button" id="exportCsvButton">导出已保存</button>
+        <div class="topbar-actions">
+          <button class="theme-button" type="button" id="themeButton" aria-label="切换主题" title="主题：跟随系统">
+            <span id="themeIcon" aria-hidden="true">◐</span>
+          </button>
+          <button class="text-btn export-btn" type="button" id="exportCsvButton" disabled title="导出已保存创作者 CSV">CSV</button>
+        </div>
       </header>
 
       <section class="search-panel" id="searchPanel">
-        <label class="field">
-          <span>关键词与筛选需求</span>
-          <textarea id="matchBrief" placeholder="例如：女，亚洲，美妆，coser，粉丝 10 万以上"></textarea>
+        <label class="field brief-field">
+          <span>找哪类创作者</span>
+          <textarea id="matchBrief" placeholder="例如：亚洲美妆创作者，粉丝 10 万以上，适合新品种草"></textarea>
         </label>
 
         <label class="field compact">
@@ -36,29 +43,29 @@
           </select>
         </label>
 
-        <label class="field compact">
+        <label class="field compact wide">
           <span>目标国家</span>
           <select id="countrySelect" class="select-control">
-            <option value="">🌐 不限国家</option>
-            <option value="US">🇺🇸 美国</option>
-            <option value="GB">🇬🇧 英国</option>
-            <option value="CA">🇨🇦 加拿大</option>
-            <option value="AU">🇦🇺 澳大利亚</option>
-            <option value="JP">🇯🇵 日本</option>
-            <option value="KR">🇰🇷 韩国</option>
-            <option value="SG">🇸🇬 新加坡</option>
-            <option value="DE">🇩🇪 德国</option>
-            <option value="FR">🇫🇷 法国</option>
-            <option value="IT">🇮🇹 意大利</option>
-            <option value="ES">🇪🇸 西班牙</option>
-            <option value="BR">🇧🇷 巴西</option>
-            <option value="MX">🇲🇽 墨西哥</option>
-            <option value="ID">🇮🇩 印尼</option>
-            <option value="TH">🇹🇭 泰国</option>
-            <option value="VN">🇻🇳 越南</option>
-            <option value="PH">🇵🇭 菲律宾</option>
-            <option value="MY">🇲🇾 马来西亚</option>
-            <option value="IN">🇮🇳 印度</option>
+            <option value="">不限国家</option>
+            <option value="US">美国</option>
+            <option value="GB">英国</option>
+            <option value="CA">加拿大</option>
+            <option value="AU">澳大利亚</option>
+            <option value="JP">日本</option>
+            <option value="KR">韩国</option>
+            <option value="SG">新加坡</option>
+            <option value="DE">德国</option>
+            <option value="FR">法国</option>
+            <option value="IT">意大利</option>
+            <option value="ES">西班牙</option>
+            <option value="BR">巴西</option>
+            <option value="MX">墨西哥</option>
+            <option value="ID">印尼</option>
+            <option value="TH">泰国</option>
+            <option value="VN">越南</option>
+            <option value="PH">菲律宾</option>
+            <option value="MY">马来西亚</option>
+            <option value="IN">印度</option>
           </select>
         </label>
 
@@ -73,16 +80,35 @@
 
         <div class="list-toolbar">
           <button class="secondary-btn" type="button" id="saveAllButton">保存全部候选</button>
+          <button class="secondary-btn review" type="button" id="startReviewButton">开始审阅</button>
           <button class="secondary-btn danger" type="button" id="clearButton">清空候选</button>
         </div>
 
-        <div class="notice" id="notice"></div>
-        <div class="progress-panel" id="progressPanel" hidden>
+        <div class="review-panel" id="reviewPanel" hidden>
+          <div class="review-head">
+            <strong>当前 OP</strong>
+            <span id="reviewMeta"></span>
+          </div>
+          <div class="review-actions">
+            <button class="review-btn like" type="button" id="reviewLikeButton">Like</button>
+            <button class="review-btn no" type="button" id="reviewNoButton">No</button>
+          </div>
+        </div>
+
+        <div class="notice" id="notice" role="status" aria-live="polite"></div>
+        <div class="progress-panel" id="progressPanel" aria-live="polite" hidden>
           <div class="progress-head">
             <strong id="progressTitle">全站匹配进行中</strong>
             <span id="progressMeta">0 秒</span>
           </div>
-          <div class="progress-track">
+          <div
+            class="progress-track"
+            role="progressbar"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="8"
+            aria-valuetext="等待开始"
+          >
             <span id="progressBar"></span>
           </div>
           <ol class="progress-steps" id="progressSteps"></ol>
@@ -90,6 +116,21 @@
         <div class="cards" id="cardList"></div>
       </section>
     </main>
+
+    <div class="contact-modal" id="contactDialog" hidden>
+      <div class="contact-backdrop" data-dialog-action="closeContact"></div>
+      <section class="contact-dialog" role="dialog" aria-modal="true" aria-labelledby="contactDialogTitle">
+        <header class="contact-dialog-head">
+          <div>
+            <span>OP 详情</span>
+            <strong id="contactDialogTitle"></strong>
+            <small id="contactDialogSubtitle"></small>
+          </div>
+          <button class="dialog-close" type="button" data-dialog-action="closeContact" aria-label="关闭">×</button>
+        </header>
+        <div class="contact-dialog-body" id="contactDialogBody"></div>
+      </section>
+    </div>
 
     <template id="cardTemplate">
       <article class="creator-card">
@@ -104,6 +145,7 @@
         <p class="bio"></p>
         <p class="match-reasons"></p>
         <div class="chips"></div>
+        <p class="item-notice" hidden></p>
         <div class="card-actions">
           <button type="button" data-action="profile">主页</button>
           <button type="button" data-action="contact">联系</button>

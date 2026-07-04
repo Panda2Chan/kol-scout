@@ -14,7 +14,7 @@ export const PLATFORM_LABELS = {
   instagram: "Instagram",
   linkedin: "LinkedIn",
   website: "Website",
-  unknown: "Unknown"
+  unknown: "未知"
 };
 
 export function createKol(input) {
@@ -23,7 +23,7 @@ export function createKol(input) {
   const normalized = {
     id: input.id || buildKolId(input.platform, input.handle, input.profileUrl),
     platform: input.platform || "unknown",
-    name: input.name || input.handle || "Unknown creator",
+    name: input.name || input.handle || "未命名 OP",
     handle: input.handle || "",
     profileUrl: input.profileUrl || "",
     avatarUrl: input.avatarUrl || "",

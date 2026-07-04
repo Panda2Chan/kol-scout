@@ -1,10 +1,22 @@
 {
   "manifest_version": 3,
-  "name": "KOL Lite",
-  "description": "低价版 KOL 发现与线索管理 MVP：扫描当前页面、保存创作者、评分、备注并导出。",
-  "version": "0.1.0",
+  "name": "KOL Scout",
+  "description": "帮出海团队快速找到海外 KOL，整理候选、保存线索并导出。",
+  "version": "1.0",
+  "icons": {
+    "16": "assets/icons/icon-16.png",
+    "32": "assets/icons/icon-32.png",
+    "48": "assets/icons/icon-48.png",
+    "128": "assets/icons/icon-128.png"
+  },
   "action": {
-    "default_title": "KOL Lite"
+    "default_title": "KOL Scout",
+    "default_icon": {
+      "16": "assets/icons/icon-16.png",
+      "32": "assets/icons/icon-32.png",
+      "48": "assets/icons/icon-48.png",
+      "128": "assets/icons/icon-128.png"
+    }
   },
   "side_panel": {
     "default_path": "src/sidepanel/sidepanel.html"

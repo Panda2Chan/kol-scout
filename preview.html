@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="system">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -38,9 +38,9 @@
       </section>
 
       <section class="toolbar" aria-label="数据操作">
-        <button class="secondary-button" type="button">增强</button>
-        <button class="secondary-button" type="button">匹配</button>
-        <button class="secondary-button" type="button">保存</button>
+        <button class="secondary-button" type="button">全站匹配</button>
+        <button class="secondary-button" type="button">保存全部</button>
+        <button class="secondary-button" type="button">JSON</button>
         <button class="secondary-button" type="button">CSV</button>
       </section>
 
@@ -61,18 +61,18 @@
                 <strong class="kol-name">Mia Chen</strong>
                 <span class="score">86 分</span>
               </div>
-              <p class="meta">YouTube · @miachen · 128K followers</p>
-              <p class="discovery">X 帖子作者 · 待增强 · 从当前页面可见帖子作者识别。</p>
-              <p class="match">匹配 86 · 高匹配 · 内容命中 AI / startup</p>
+              <p class="meta">YouTube / @miachen / 128K followers</p>
+              <p class="discovery">X 帖子作者 / 待增强 / 从当前页面可见帖子作者识别。</p>
+              <p class="match">匹配 86 / 高匹配 / 内容命中 AI / startup</p>
               <p class="bio">跨境品牌内容创作者，长期分享独立站增长、投放复盘和创作者合作。</p>
               <div class="card-controls">
-                <select name="preview-status" aria-label="跟进状态">
+                <select class="status-select" name="preview-status" aria-label="跟进状态">
                   <option>已保存</option>
                   <option>重点跟进</option>
                 </select>
-                <input name="preview-tags" value="DTC, YouTube" />
+                <input class="tag-input" name="preview-tags" value="DTC, YouTube" />
               </div>
-              <textarea name="preview-notes" rows="2">适合测试低客单价 SaaS 联名内容。</textarea>
+              <textarea class="notes-input" name="preview-notes" rows="2">适合测试低客单价 SaaS 联名内容。</textarea>
               <div class="card-actions">
                 <a class="profile-link" href="#">打开主页</a>
                 <button type="button">保存</button>

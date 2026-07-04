@@ -1,19 +1,24 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="system">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>KOL Lite</title>
+    <title>KOL Scout</title>
     <link rel="stylesheet" href="./popup.css" />
   </head>
   <body>
     <main class="app">
       <header class="topbar">
-        <div>
-          <p class="eyebrow">KOL Lite</p>
-          <h1>创作者线索台</h1>
+        <div class="brand-row">
+          <img class="brand-icon" src="../../assets/icons/icon-48.png" alt="" aria-hidden="true" />
+          <div>
+            <p class="eyebrow">KOL Scout</p>
+            <h1>帮出海团队快速找到海外 KOL</h1>
+          </div>
         </div>
-        <button id="scanButton" class="primary-button" type="button">扫描</button>
+        <button class="theme-button" type="button" id="themeButton" aria-label="切换主题" title="主题：跟随系统">
+          <span id="themeIcon" aria-hidden="true">◐</span>
+        </button>
       </header>
 
       <section class="stats" aria-label="线索统计">
@@ -23,7 +28,7 @@
         </div>
         <div>
           <span id="candidateCount">0</span>
-          <small>本页候选</small>
+          <small>候选</small>
         </div>
         <div>
           <span id="avgScore">0</span>
@@ -31,8 +36,8 @@
         </div>
       </section>
 
-      <section class="match-panel" aria-label="AI 智能匹配">
-        <label for="matchBrief">理想创作者 Brief</label>
+      <section class="match-panel" aria-label="创作者匹配">
+        <label for="matchBrief">找哪类创作者</label>
         <textarea
           id="matchBrief"
           name="matchBrief"
@@ -52,52 +57,59 @@
         <div class="filter-row">
           <label for="countrySelect">目标国家</label>
           <select id="countrySelect" name="countrySelect" class="select-control">
-            <option value="">🌐 不限国家</option>
-            <option value="US">🇺🇸 美国</option>
-            <option value="GB">🇬🇧 英国</option>
-            <option value="CA">🇨🇦 加拿大</option>
-            <option value="AU">🇦🇺 澳大利亚</option>
-            <option value="JP">🇯🇵 日本</option>
-            <option value="KR">🇰🇷 韩国</option>
-            <option value="SG">🇸🇬 新加坡</option>
-            <option value="DE">🇩🇪 德国</option>
-            <option value="FR">🇫🇷 法国</option>
-            <option value="IT">🇮🇹 意大利</option>
-            <option value="ES">🇪🇸 西班牙</option>
-            <option value="BR">🇧🇷 巴西</option>
-            <option value="MX">🇲🇽 墨西哥</option>
-            <option value="ID">🇮🇩 印尼</option>
-            <option value="TH">🇹🇭 泰国</option>
-            <option value="VN">🇻🇳 越南</option>
-            <option value="PH">🇵🇭 菲律宾</option>
-            <option value="MY">🇲🇾 马来西亚</option>
-            <option value="IN">🇮🇳 印度</option>
+            <option value="">不限国家</option>
+            <option value="US">美国</option>
+            <option value="GB">英国</option>
+            <option value="CA">加拿大</option>
+            <option value="AU">澳大利亚</option>
+            <option value="JP">日本</option>
+            <option value="KR">韩国</option>
+            <option value="SG">新加坡</option>
+            <option value="DE">德国</option>
+            <option value="FR">法国</option>
+            <option value="IT">意大利</option>
+            <option value="ES">西班牙</option>
+            <option value="BR">巴西</option>
+            <option value="MX">墨西哥</option>
+            <option value="ID">印尼</option>
+            <option value="TH">泰国</option>
+            <option value="VN">越南</option>
+            <option value="PH">菲律宾</option>
+            <option value="MY">马来西亚</option>
+            <option value="IN">印度</option>
           </select>
         </div>
       </section>
 
       <section class="toolbar" aria-label="数据操作">
         <button id="matchButton" class="secondary-button" type="button">全站匹配</button>
-        <button id="saveAllButton" class="secondary-button" type="button">保存</button>
+        <button id="saveAllButton" class="secondary-button" type="button" disabled>保存全部</button>
         <button id="exportCsvButton" class="secondary-button" type="button">CSV</button>
         <button id="exportJsonButton" class="secondary-button" type="button">JSON</button>
       </section>
 
-      <p id="notice" class="notice">输入关键词和筛选需求后点全站匹配，后端会查询数据源、过滤低质账号并按匹配度排序。</p>
+      <p id="notice" class="notice" role="status" aria-live="polite">写一句你要找的人群，点全站匹配。结果会先放进候选，确认后再保存。</p>
 
-      <section class="progress-panel" id="progressPanel" hidden>
+      <section class="progress-panel" id="progressPanel" aria-live="polite" hidden>
         <div class="progress-head">
           <strong id="progressTitle">全站匹配进行中</strong>
           <span id="progressMeta">0 秒</span>
         </div>
-        <div class="progress-track">
+        <div
+          class="progress-track"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="8"
+          aria-valuetext="等待开始"
+        >
           <span id="progressBar"></span>
         </div>
         <ol class="progress-steps" id="progressSteps"></ol>
       </section>
 
       <section>
-        <h2>本页候选</h2>
+        <h2>候选</h2>
         <div id="candidateList" class="list empty">暂无候选</div>
       </section>
 

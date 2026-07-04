@@ -69,7 +69,7 @@ export async function postBackendJson(path, payload, options = {}) {
       throw new Error(options.timeoutMessage || `后端请求超过 ${formatDuration(timeoutMs)} 未返回。`);
     }
     if (/Failed to fetch|NetworkError|Load failed/i.test(error?.message || "")) {
-      throw new Error("无法连接本地后端，请确认 KOL Lite API 已启动在 http://127.0.0.1:8787。");
+      throw new Error("无法连接本地后端，请确认 KOL Scout API 已启动在 http://127.0.0.1:8787。");
     }
     throw error;
   } finally {
@@ -134,7 +134,7 @@ export async function postBackendJsonStream(path, payload, options = {}) {
       throw new Error(options.timeoutMessage || `后端请求超过 ${formatDuration(timeoutMs)} 未返回。`);
     }
     if (/Failed to fetch|NetworkError|Load failed/i.test(error?.message || "")) {
-      throw new Error("无法连接本地后端，请确认 KOL Lite API 已启动在 http://127.0.0.1:8787。");
+      throw new Error("无法连接本地后端，请确认 KOL Scout API 已启动在 http://127.0.0.1:8787。");
     }
     throw error;
   } finally {
