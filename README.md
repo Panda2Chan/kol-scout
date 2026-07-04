@@ -1,4 +1,4 @@
-# KOL Lite MVP
+# KOL Scout
 
 面向 KOL 运营场景的 Chrome 插件 MVP。当前版本覆盖 X 和 TikTok：
 通过全站匹配召回真实创作者，读取公开主页资料，按匹配度和质量过滤后生成候选 list。

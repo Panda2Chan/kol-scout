@@ -1,10 +1,10 @@
-# EasyKOL 核心功能分析与 KOL Lite MVP 定义
+# EasyKOL 核心功能分析与 KOL Scout MVP 定义
 
 ## 一句话定位
 
 EasyKOL 是面向品牌和营销团队的 AI Influencer Marketing Platform，核心卖点是从搜索、数据分析、联系方式、外联到活动追踪的一体化 KOL 工作台。
 
-KOL Lite 的切入点是：用 Chrome 插件做「更便宜、更轻、更快上手」的公开线索采集和本地管理工具。
+KOL Scout 的切入点是：用 Chrome 插件做「更便宜、更轻、更快上手」的公开线索采集和本地管理工具。
 
 ## EasyKOL 公开核心能力
 
@@ -44,7 +44,7 @@ KOL Lite 的切入点是：用 Chrome 插件做「更便宜、更轻、更快上
 
 EasyKOL 的强项是一体化和数据深度，但这也意味着重、贵、学习成本高。
 
-KOL Lite 首版避开重后端，抓住更刚需的轻量动作：
+KOL Scout 首版避开重后端，抓住更刚需的轻量动作：
 
 - 用户正在浏览页面时，一键保存潜在 KOL
 - 自动从页面提取公开信息，减少复制粘贴
@@ -86,7 +86,7 @@ KOL Lite 首版避开重后端，抓住更刚需的轻量动作：
 ```text
 [打开网页/创作者主页]
         ↓
-[点击 KOL Lite]
+[点击 KOL Scout]
         ↓
 [扫描当前页面]
         ↓

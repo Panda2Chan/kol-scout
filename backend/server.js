@@ -246,7 +246,7 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`KOL Lite API listening on http://127.0.0.1:${PORT}`);
+  console.log(`KOL Scout API listening on http://127.0.0.1:${PORT}`);
 });
 
 async function readJson(req) {
