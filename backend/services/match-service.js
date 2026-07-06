@@ -80,7 +80,7 @@ export function matchCreators(briefInput, creators) {
 
 export function buildCreatorSearchPlan(briefInput = {}, options = {}) {
   const brief = normalizeBrief(briefInput);
-  const platform = normalizeSearchPlatform(options.platform || brief.platforms[0] || "x");
+  const platform = normalizeSearchPlatform(options.platform || brief.platforms[0] || "tiktok");
   const basicTraits = extractBasicTraitConstraints(brief, options.filters || {});
   const negativeTerms = buildNegativeSearchTerms(brief, basicTraits);
   const positiveTerms = buildPositiveSearchTerms(brief, negativeTerms, basicTraits);
@@ -224,7 +224,7 @@ function buildReasons(brief, creator, matchedKeywords, dimensions) {
 
 function parseRawBrief(text) {
   const lower = text.toLowerCase();
-  const platforms = ["x", "youtube", "tiktok", "instagram", "linkedin"].filter((platform) => lower.includes(platform));
+  const platforms = ["tiktok", "x", "youtube", "instagram", "linkedin"].filter((platform) => lower.includes(platform));
   const excludeKeywords = unique([
     ...["crypto", "politics", "giveaway", "博彩", "成人"].filter((keyword) => lower.includes(keyword.toLowerCase())),
     ...extractExplicitExcludeTerms(lower)
@@ -421,7 +421,7 @@ function extractDirectProfiles(text, platform) {
 }
 
 function normalizeSearchPlatform(platform) {
-  const normalized = String(platform || "x").toLowerCase().replace(/\s+/g, "");
+  const normalized = String(platform || "tiktok").toLowerCase().replace(/\s+/g, "");
   if (normalized === "twitter") return "x";
   if (normalized === "tiktok" || normalized === "douyin" || normalized === "抖音") return "tiktok";
   return normalized;

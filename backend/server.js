@@ -4,29 +4,55 @@ import { fileURLToPath } from "node:url";
 import { loadLocalEnv } from "./services/env-service.js";
 import { discoverCreators } from "./services/discovery-service.js";
 import { buildCreatorSearchPlan, matchCreators } from "./services/match-service.js";
-import { buildAiCreatorSearchPlan } from "./services/ai-search-service.js";
+import { buildAiCreatorSearchPlan, configureAiSearchCache } from "./services/ai-search-service.js";
+import { getBackendConfig, getCorsHeaders, getHealthConfigSummary } from "./services/config-service.js";
+import { createAccessController } from "./services/access-control-service.js";
+import { createDiscoveryQueue } from "./services/discovery-queue-service.js";
+import { createUsageService } from "./services/usage-service.js";
+import { createCacheAdapter } from "./services/cache-service.js";
+import { configureDiscoveryCache } from "./services/discovery-cache-service.js";
 import { createRequestLogger } from "./services/logger-service.js";
 import { createPlatformRegistry } from "./platforms/registry.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 loadLocalEnv(resolve(__dirname, "..", ".env"));
 
-const PORT = Number(process.env.PORT || 8787);
+const config = getBackendConfig();
+const cacheAdapter = createCacheAdapter(config);
+if (config.cache.redisRequired) {
+  await cacheAdapter.health();
+}
+configureDiscoveryCache({ cacheAdapter });
+configureAiSearchCache({ cacheAdapter, ttlMs: config.cache.aiPlanTtlMs });
+const accessController = createAccessController(config, { cacheAdapter });
+const discoveryQueue = createDiscoveryQueue(config);
+const usageService = createUsageService(config);
 const registry = createPlatformRegistry();
 
 const server = createServer(async (req, res) => {
   let requestLogger = null;
   try {
     if (req.method === "OPTIONS") {
-      return sendJson(res, 204, {});
+      return sendJson(req, res, 204, {});
     }
 
     const url = new URL(req.url, `http://${req.headers.host}`);
 
     if (req.method === "GET" && url.pathname === "/health") {
-      return sendJson(res, 200, {
+      const health = getHealthConfigSummary(config);
+      const cacheHealth = await cacheAdapter.health().catch((error) => ({
+        driver: config.cache.driver,
+        available: false,
+        error: error.message
+      }));
+      return sendJson(req, res, 200, {
         ok: true,
         service: "kol-lite-api",
+        ...health,
+        cache: {
+          ...health.cache,
+          ...cacheHealth
+        },
         searchProviders: {
           tavily: Boolean(process.env.TAVILY_API_KEY),
           jina: Boolean(process.env.JINA_API_KEY),
@@ -37,34 +63,36 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/match/creators") {
+      await accessController.guardRequest(req);
       const body = await readJson(req);
       const creators = Array.isArray(body.creators) ? body.creators : [];
-      return sendJson(res, 200, {
+      return sendJson(req, res, 200, {
         results: matchCreators(body.brief || {}, creators, { locale: body.locale || "zh-CN" })
       });
     }
 
     if (req.method === "POST" && url.pathname === "/api/search/creators") {
+      await accessController.guardRequest(req);
       const body = await readJson(req);
       const fallbackPlan = buildCreatorSearchPlan(body.brief || {}, {
-        platform: body.platform || "x",
+        platform: body.platform || "tiktok",
         locale: body.locale || "zh-CN"
       });
       const plan = await buildAiCreatorSearchPlan(fallbackPlan.normalizedBrief, fallbackPlan, {
-        platform: body.platform || "x",
+        platform: body.platform || "tiktok",
         locale: body.locale || "zh-CN"
       });
       const provider = registry.get(plan.platform);
 
       if (!provider?.buildSearchUrl) {
-        return sendJson(res, 400, { ok: false, error: `Unsupported search platform: ${plan.platform}` });
+        return sendJson(req, res, 400, { ok: false, error: `Unsupported search platform: ${plan.platform}` });
       }
 
       const directProfileUrls = plan.directProfiles
         .map((handle) => provider.buildProfileUrl?.(handle))
         .filter(Boolean);
 
-      return sendJson(res, 200, {
+      return sendJson(req, res, 200, {
         ok: true,
         plan: {
           ...plan,
@@ -88,6 +116,8 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/discover/creators/stream") {
+      let access = null;
+      let usage = null;
       requestLogger = createRequestLogger("discover-api", {
         method: req.method,
         route: url.pathname
@@ -106,42 +136,66 @@ const server = createServer(async (req, res) => {
         }
       });
 
-      const body = await readJson(req);
-      const platform = body.platform || "x";
-      requestLogger.info("request.stream_start", {
-        platform,
-        limit: body.limit || 20,
-        briefLength: getBriefLength(body.brief),
-        filters: summarizeFilters(body.filters || {}),
-        feedbackItems: Array.isArray(body.feedback?.items) ? body.feedback.items.length : 0,
-        searchProviders: getSearchProviderStatus()
-      });
-
-      sendJsonStreamHeaders(res);
-      writeStreamEvent(res, "start", {
-        ok: true,
-        requestId: requestLogger.requestId,
-        platform
-      });
-
+      access = await accessController.guardRequest(req, { discovery: true });
       try {
-        const result = await discoverCreators(body.brief || {}, registry, {
+        const body = await readJson(req);
+        const platform = body.platform || "tiktok";
+        usage = usageService.createContext({
+          requestId: requestLogger.requestId,
+          identity: access.identity,
           platform,
-          locale: body.locale || "zh-CN",
+          brief: body.brief || {},
+          requestedLimit: body.limit || 20
+        });
+        requestLogger.info("request.stream_start", {
+          platform,
           limit: body.limit || 20,
-          filters: body.filters || {},
-          feedback: body.feedback || {},
+          briefLength: getBriefLength(body.brief),
+          filters: summarizeFilters(body.filters || {}),
+          feedbackItems: Array.isArray(body.feedback?.items) ? body.feedback.items.length : 0,
+          searchProviders: getSearchProviderStatus()
+        });
+
+        sendJsonStreamHeaders(req, res);
+        writeStreamEvent(res, "start", {
+          ok: true,
+          requestId: requestLogger.requestId,
+          platform
+        });
+
+        const result = await discoveryQueue.run(() => discoverCreators(body.brief || {}, registry, {
+            platform,
+            locale: body.locale || "zh-CN",
+            limit: body.limit || 20,
+            filters: body.filters || {},
+            feedback: body.feedback || {},
+            signal: controller.signal,
+            logger: requestLogger.child({ component: "discovery-service" }),
+            usage,
+            onCandidate: (candidate, progress) => {
+              writeStreamEvent(res, "candidate", {
+                requestId: requestLogger.requestId,
+                candidate,
+                progress
+              });
+            }
+          }), {
           signal: controller.signal,
-          logger: requestLogger.child({ component: "discovery-service" }),
-          onCandidate: (candidate, progress) => {
-            writeStreamEvent(res, "candidate", {
+          onQueued: (queue) => {
+            writeStreamEvent(res, "queued", {
               requestId: requestLogger.requestId,
-              candidate,
-              progress
+              queue
+            });
+          },
+          onStarted: (queue) => {
+            writeStreamEvent(res, "started", {
+              requestId: requestLogger.requestId,
+              queue
             });
           }
         });
 
+        await usage.finish({ status: "success", response: result });
         requestLogger.info("request.stream_success", {
           statusCode: 200,
           candidates: result.candidates?.length || 0,
@@ -153,6 +207,7 @@ const server = createServer(async (req, res) => {
         writeStreamEvent(res, "complete", { ok: true, requestId: requestLogger.requestId, ...result });
         return res.end();
       } catch (error) {
+        await usage?.finish({ status: "error", error });
         const statusCode = error.statusCode || 500;
         requestLogger?.[error.code === "DISCOVERY_EMPTY" ? "warn" : "error"]?.("request.stream_error", {
           statusCode,
@@ -167,10 +222,14 @@ const server = createServer(async (req, res) => {
           statusCode
         });
         return res.end();
+      } finally {
+        await access?.release();
       }
     }
 
     if (req.method === "POST" && url.pathname === "/api/discover/creators") {
+      let access = null;
+      let usage = null;
       requestLogger = createRequestLogger("discover-api", {
         method: req.method,
         route: url.pathname
@@ -186,38 +245,55 @@ const server = createServer(async (req, res) => {
         }
       });
 
-      const body = await readJson(req);
-      const platform = body.platform || "x";
-      requestLogger.info("request.start", {
-        platform,
-        limit: body.limit || 20,
-        briefLength: getBriefLength(body.brief),
-        filters: summarizeFilters(body.filters || {}),
-        feedbackItems: Array.isArray(body.feedback?.items) ? body.feedback.items.length : 0,
-        searchProviders: getSearchProviderStatus()
-      });
+      try {
+        access = await accessController.guardRequest(req, { discovery: true });
+        const body = await readJson(req);
+        const platform = body.platform || "tiktok";
+        usage = usageService.createContext({
+          requestId: requestLogger.requestId,
+          identity: access.identity,
+          platform,
+          brief: body.brief || {},
+          requestedLimit: body.limit || 20
+        });
+        requestLogger.info("request.start", {
+          platform,
+          limit: body.limit || 20,
+          briefLength: getBriefLength(body.brief),
+          filters: summarizeFilters(body.filters || {}),
+          feedbackItems: Array.isArray(body.feedback?.items) ? body.feedback.items.length : 0,
+          searchProviders: getSearchProviderStatus()
+        });
 
-      const result = await discoverCreators(body.brief || {}, registry, {
-        platform,
-        locale: body.locale || "zh-CN",
-        limit: body.limit || 20,
-        filters: body.filters || {},
-        feedback: body.feedback || {},
-        logger: requestLogger.child({ component: "discovery-service" })
-      });
+        const result = await discoveryQueue.run(() => discoverCreators(body.brief || {}, registry, {
+          platform,
+          locale: body.locale || "zh-CN",
+          limit: body.limit || 20,
+          filters: body.filters || {},
+          feedback: body.feedback || {},
+          logger: requestLogger.child({ component: "discovery-service" }),
+          usage
+        }));
 
-      requestLogger.info("request.success", {
-        statusCode: 200,
-        candidates: result.candidates?.length || 0,
-        totalFetched: result.summary?.totalFetched || 0,
-        rawFetched: result.summary?.rawFetched || 0,
-        dataSource: result.summary?.dataSource || "",
-        aiReviewEnabled: Boolean(result.summary?.aiReview?.enabled)
-      });
-      return sendJson(res, 200, { ok: true, requestId: requestLogger.requestId, ...result });
+        await usage.finish({ status: "success", response: result });
+        requestLogger.info("request.success", {
+          statusCode: 200,
+          candidates: result.candidates?.length || 0,
+          totalFetched: result.summary?.totalFetched || 0,
+          rawFetched: result.summary?.rawFetched || 0,
+          dataSource: result.summary?.dataSource || "",
+          aiReviewEnabled: Boolean(result.summary?.aiReview?.enabled)
+        });
+        return sendJson(req, res, 200, { ok: true, requestId: requestLogger.requestId, ...result });
+      } catch (error) {
+        await usage?.finish({ status: "error", error });
+        throw error;
+      } finally {
+        await access?.release();
+      }
     }
 
-    return sendJson(res, 404, { ok: false, error: "Route not found" });
+    return sendJson(req, res, 404, { ok: false, error: "Route not found" });
   } catch (error) {
     const statusCode = error.statusCode || 500;
     const isEmptyResult = error.code === "DISCOVERY_EMPTY";
@@ -236,7 +312,7 @@ const server = createServer(async (req, res) => {
       });
       return res.end();
     }
-    return sendJson(res, statusCode, {
+    return sendJson(req, res, statusCode, {
       ok: false,
       requestId: requestLogger?.requestId,
       error: error.message,
@@ -245,8 +321,8 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`KOL Scout API listening on http://127.0.0.1:${PORT}`);
+server.listen(config.server.port, config.server.host, () => {
+  console.log(`KOL Scout API listening on http://${config.server.host}:${config.server.port}`);
 });
 
 async function readJson(req) {
@@ -256,12 +332,9 @@ async function readJson(req) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-function sendJson(res, statusCode, payload) {
+function sendJson(req, res, statusCode, payload) {
   res.writeHead(statusCode, {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "content-type",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Content-Type": "application/json; charset=utf-8"
+    ...getCorsHeaders(req, config)
   });
 
   if (statusCode === 204) {
@@ -272,11 +345,9 @@ function sendJson(res, statusCode, payload) {
   res.end(JSON.stringify(payload));
 }
 
-function sendJsonStreamHeaders(res) {
+function sendJsonStreamHeaders(req, res) {
   res.writeHead(200, {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "content-type",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    ...getCorsHeaders(req, config),
     "Cache-Control": "no-cache, no-transform",
     "Connection": "keep-alive",
     "Content-Type": "application/x-ndjson; charset=utf-8",

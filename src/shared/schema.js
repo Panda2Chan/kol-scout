@@ -8,9 +8,9 @@ export const STORAGE_KEYS = {
 export const STATUS_OPTIONS = ["saved", "shortlisted", "contacted", "ignored"];
 
 export const PLATFORM_LABELS = {
+  tiktok: "TikTok",
   x: "X",
   youtube: "YouTube",
-  tiktok: "TikTok",
   instagram: "Instagram",
   linkedin: "LinkedIn",
   website: "Website",

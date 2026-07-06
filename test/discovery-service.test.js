@@ -63,6 +63,69 @@ test("TikTok unknown followers are filtered when a follower floor is required", 
   );
 });
 
+test("Discovery filters default to 10000 followers but allow explicit zero", () => {
+  assert.equal(__testing.normalizeFilters({}, {}).minFollowers, 10000);
+  assert.equal(__testing.normalizeFilters({ minFollowers: 0 }, {}).minFollowers, 0);
+  assert.equal(__testing.normalizeFilters({}, { followerRange: { min: 50000 } }).minFollowers, 50000);
+});
+
+test("Country filter rejects mismatches and downgrades missing evidence", () => {
+  const filters = __testing.normalizeFilters({
+    country: "JP",
+    minFollowers: 10000,
+    minMatchScore: 50,
+    minQualityScore: 55,
+    maxFakeFollowerRisk: "medium"
+  });
+  const baseCreator = {
+    platform: "tiktok",
+    profileUrl: "https://www.tiktok.com/@cosplay.creator",
+    name: "Cosplay Creator",
+    handle: "@cosplay.creator",
+    bio: "cosplay creator with daily costume videos",
+    discovery: { kind: "web-search", evidenceText: "title: Cosplay Creator on TikTok; snippet: cosplay creator" },
+    enrichment: { status: "ready" },
+    metrics: { followers: 30000 },
+    tags: ["cosplay"],
+    contact: {},
+    match: { score: 82, reasons: ["内容命中 cosplay"], dimensions: { baseMatch: 82 } },
+    quality: { score: 76, fakeFollowerRisk: "low", concerns: [] }
+  };
+  const japaneseCreator = {
+    ...baseCreator,
+    bio: "Tokyo based Japanese cosplay creator with daily costume videos",
+    discovery: { ...baseCreator.discovery, evidenceText: "title: Japanese Cosplayer; snippet: Tokyo cosplay creator" }
+  };
+  const [missingCountryCreator] = __testing.applyPostProcessingScores([
+    __testing.buildRuleAnalyzedCreator(baseCreator, baseCreator.match, filters)
+  ]);
+  const [matchedCountryCreator] = __testing.applyPostProcessingScores([
+    __testing.buildRuleAnalyzedCreator(japaneseCreator, japaneseCreator.match, filters)
+  ]);
+
+  assert.equal(__testing.getFilteredReason(japaneseCreator, filters), "");
+  assert.equal(
+    __testing.getFilteredReason({
+      ...baseCreator,
+      bio: "Brazilian cosplay creator with daily costume videos",
+      discovery: { ...baseCreator.discovery, evidenceText: "title: Brazilian Cosplayer; snippet: Sao Paulo cosplay creator" }
+    }, filters),
+    "国家不匹配：日本"
+  );
+  assert.equal(__testing.getFilteredReason(baseCreator, filters), "");
+  assert.ok(missingCountryCreator.score < matchedCountryCreator.score);
+  assert.equal(missingCountryCreator.tags.includes("待确认：日本"), false);
+  assert.equal(missingCountryCreator.match.reasons.includes("日本证据未确认，排序降权"), false);
+  assert.equal(missingCountryCreator.match.concerns.includes("国家证据不足：日本，已降权"), false);
+  assert.deepEqual(missingCountryCreator.match.dimensions.featureEvidenceGaps, [{
+    type: "country",
+    id: "country:JP",
+    category: "country",
+    label: "日本",
+    reason: "国家证据不足：日本"
+  }]);
+});
+
 test("extra penalties reduce final score without bypassing risk penalty", () => {
   const quality = { score: 80, fakeFollowerRisk: "medium" };
   assert.equal(__testing.calculateFinalScore(80, quality, 0), 72);
@@ -223,7 +286,7 @@ test("Basic trait constraints reject candidates with opposite region evidence", 
   assert.equal(__testing.getFilteredReason(creator, filters), "基础特征不匹配：亚洲/亚裔");
 });
 
-test("Basic trait constraints do not accept search-only keywords as profile proof", () => {
+test("Basic trait constraints downgrade missing profile evidence without filtering", () => {
   const filters = __testing.normalizeFilters({
     minFollowers: 10000,
     minMatchScore: 50,
@@ -245,11 +308,23 @@ test("Basic trait constraints do not accept search-only keywords as profile proo
     metrics: { followers: 30000 },
     tags: ["coser", "cosplay", "asian"],
     contact: {},
-    match: { score: 82, dimensions: { baseMatch: 82 } },
+    match: { score: 82, reasons: ["内容命中 cosplay"], dimensions: { baseMatch: 82 } },
     quality: { score: 76, fakeFollowerRisk: "low", concerns: [] }
   };
+  const analyzed = __testing.buildRuleAnalyzedCreator(creator, creator.match, filters);
 
-  assert.equal(__testing.getFilteredReason(creator, filters), "基础特征证据不足：亚洲/亚裔");
+  assert.equal(__testing.getFilteredReason(creator, filters), "");
+  assert.equal(analyzed.tags.includes("待确认：亚洲/亚裔"), false);
+  assert.equal(analyzed.match.reasons.includes("亚洲/亚裔证据未确认，排序降权"), false);
+  assert.equal(analyzed.match.concerns.includes("基础特征证据不足：亚洲/亚裔，已降权"), false);
+  assert.deepEqual(analyzed.match.dimensions.featureEvidenceGaps, [{
+    reason: "基础特征证据不足：亚洲/亚裔",
+    traitId: "region:asian",
+    category: "region",
+    label: "亚洲/亚裔",
+    type: "basic-trait",
+    id: "region:asian"
+  }]);
 });
 
 test("Basic trait constraints accept candidates with profile-level trait evidence", () => {

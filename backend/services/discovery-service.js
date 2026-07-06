@@ -13,6 +13,7 @@ import {
 } from "./discovery-cache-service.js";
 import {
   extractBasicTraitConstraints,
+  getBasicTraitEvidenceGaps,
   serializeBasicTraitConstraints,
   validateBasicTraitConstraints
 } from "./trait-constraints-service.js";
@@ -20,8 +21,87 @@ import {
 const DEFAULT_FILTERS = {
   minMatchScore: 50,
   minQualityScore: 55,
-  minFollowers: 0,
+  minFollowers: 10_000,
   maxFakeFollowerRisk: "medium"
+};
+
+const COUNTRY_FILTERS = {
+  US: {
+    label: "美国",
+    patterns: [/\b(?:united states|usa|u\.s\.a|america|american|california|los angeles|new york|nyc|texas|florida)\b/i, /美国|美國|洛杉矶|洛杉磯|纽约|紐約/]
+  },
+  GB: {
+    label: "英国",
+    patterns: [/\b(?:united kingdom|uk|u\.k\.|britain|british|england|london)\b/i, /英国|英國|伦敦|倫敦/]
+  },
+  CA: {
+    label: "加拿大",
+    patterns: [/\b(?:canada|canadian|toronto|vancouver|montreal)\b/i, /加拿大|多伦多|多倫多|温哥华|溫哥華|蒙特利尔|蒙特利爾/]
+  },
+  AU: {
+    label: "澳大利亚",
+    patterns: [/\b(?:australia|australian|sydney|melbourne|brisbane)\b/i, /澳大利亚|澳洲|悉尼|墨尔本|墨爾本/]
+  },
+  JP: {
+    label: "日本",
+    patterns: [/\b(?:japan|japanese|tokyo|osaka|kyoto|nagoya|yokohama)\b/i, /日本|日本人|日本語|日系|東京|东京|大阪|京都|名古屋|横浜|横滨|🇯🇵/]
+  },
+  KR: {
+    label: "韩国",
+    patterns: [/\b(?:korea|korean|seoul|busan)\b/i, /韩国|韓国|韓國|首尔|首爾|釜山|🇰🇷/]
+  },
+  SG: {
+    label: "新加坡",
+    patterns: [/\b(?:singapore|singaporean)\b/i, /新加坡|🇸🇬/]
+  },
+  DE: {
+    label: "德国",
+    patterns: [/\b(?:germany|german|berlin|munich)\b/i, /德国|德國|柏林|慕尼黑/]
+  },
+  FR: {
+    label: "法国",
+    patterns: [/\b(?:france|french|paris)\b/i, /法国|法國|巴黎/]
+  },
+  IT: {
+    label: "意大利",
+    patterns: [/\b(?:italy|italian|rome|milan)\b/i, /意大利|义大利|義大利|罗马|羅馬|米兰|米蘭/]
+  },
+  ES: {
+    label: "西班牙",
+    patterns: [/\b(?:spain|spanish|madrid|barcelona)\b/i, /西班牙|马德里|馬德里|巴塞罗那|巴塞羅那/]
+  },
+  BR: {
+    label: "巴西",
+    patterns: [/\b(?:brazil|brazilian|sao paulo|são paulo|rio de janeiro)\b/i, /巴西|圣保罗|聖保羅|里约|里約/]
+  },
+  MX: {
+    label: "墨西哥",
+    patterns: [/\b(?:mexico|mexican|mexico city)\b/i, /墨西哥/]
+  },
+  ID: {
+    label: "印尼",
+    patterns: [/\b(?:indonesia|indonesian|jakarta|bali)\b/i, /印尼|印度尼西亚|印度尼西亞|雅加达|雅加達|巴厘岛|峇里/]
+  },
+  TH: {
+    label: "泰国",
+    patterns: [/\b(?:thailand|thai|bangkok)\b/i, /泰国|泰國|曼谷/]
+  },
+  VN: {
+    label: "越南",
+    patterns: [/\b(?:vietnam|vietnamese|hanoi|saigon|ho chi minh)\b/i, /越南|河内|河內|西贡|西貢|胡志明/]
+  },
+  PH: {
+    label: "菲律宾",
+    patterns: [/\b(?:philippines|filipino|filipina|manila)\b/i, /菲律宾|菲律賓|马尼拉|馬尼拉/]
+  },
+  MY: {
+    label: "马来西亚",
+    patterns: [/\b(?:malaysia|malaysian|kuala lumpur)\b/i, /马来西亚|馬來西亞|吉隆坡/]
+  },
+  IN: {
+    label: "印度",
+    patterns: [/\b(?:india|indian|delhi|mumbai|bangalore)\b/i, /印度|德里|孟买|孟買|班加罗尔|班加羅爾/]
+  }
 };
 
 const RISK_RANK = { low: 1, medium: 2, high: 3 };
@@ -29,6 +109,8 @@ const DISCOVERY_TOTAL_TIMEOUT_MS = 10 * 60 * 1000;
 const TIKTOK_RAW_MIN_LIMIT = 80;
 const TIKTOK_RAW_MAX_LIMIT = 150;
 const TIKTOK_UNKNOWN_FOLLOWER_PENALTY = 6;
+const FEATURE_EVIDENCE_GAP_PENALTY = 8;
+const FEATURE_EVIDENCE_GAP_MAX_PENALTY = 18;
 const MIN_TIKTOK_WEB_PROFILE_SIGNALS = 2;
 
 export class DiscoveryEmptyError extends Error {
@@ -67,7 +149,7 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
     options.signal
   );
   const brief = normalizeBrief(briefInput);
-  const platform = normalizePlatform(options.platform || brief.platforms[0] || "x");
+  const platform = normalizePlatform(options.platform || brief.platforms[0] || "tiktok");
   const provider = registry.get(platform);
 
   if (!provider?.discoverCreators) {
@@ -109,6 +191,9 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
     positiveTerms: plan.positiveTerms?.length || 0,
     negativeTerms: plan.negativeTerms?.length || 0
   });
+  options.usage?.recordStage("ai_plan", stageStartedAt, {
+    cached: Boolean(plan.aiSearch?.cached)
+  });
 
   const providerLogger = logger?.child?.({ component: `${platform}-provider` }) || logger;
   const discoveryOptions = {
@@ -141,16 +226,23 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
         limit: Math.min(Math.max(limit, 8), 20)
       }), totalSignal, totalTimeoutMs, startedAt);
       fetched = aiWebSearch.creators;
+      const enrichStartedAt = Date.now();
       fetched = await runWithAbort(
         enrichAiWebSearchCreators(fetched, provider, 20, totalSignal, totalTimeoutMs, startedAt),
         totalSignal,
         totalTimeoutMs,
         startedAt
       );
+      options.usage?.recordStage("profile_enrich", enrichStartedAt, {
+        enriched: fetched.length
+      });
       dataSource = "ai-web-search";
       logDiscovery(logger, "ai_web_search.done", stageStartedAt, {
         fetched: fetched.length,
         dataSource
+      });
+      options.usage?.recordStage("ai_web_search", stageStartedAt, {
+        fetched: fetched.length
       });
     } catch (error) {
       if (totalSignal.aborted) throw createDiscoveryTimeoutError(totalTimeoutMs, startedAt);
@@ -163,6 +255,9 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
         error: error.message,
         fallback: provider.sourceName || "unknown"
       };
+      options.usage?.recordStage("ai_web_search", stageStartedAt, {
+        errorCode: error.code || "AI_WEB_SEARCH_FAILED"
+      });
     }
   }
 
@@ -177,7 +272,7 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
       limit: discoveryOptions.limit,
       locale: options.locale || "zh-CN"
     });
-    const cached = getThirdPartyDiscoveryCache(thirdPartyCacheKey);
+    const cached = await getThirdPartyDiscoveryCache(thirdPartyCacheKey);
     thirdPartyCache = cached ? {
       enabled: true,
       hit: true,
@@ -204,6 +299,10 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
         fetched: fetched.length,
         rawFetched: sourceDiagnostics?.rawFetched ?? fetched.length
       });
+      options.usage?.recordStage("provider_discovery", stageStartedAt, {
+        cacheHit: true,
+        fetched: fetched.length
+      });
     } else if (cached?.kind === "error") {
       logDiscovery(logger, "provider_discovery.cache_empty", stageStartedAt, {
         source: provider.sourceName || "unknown",
@@ -212,6 +311,10 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
         expiresInMs: cached.expiresInMs,
         error: cached.error
       }, "warn");
+      options.usage?.recordStage("provider_discovery", stageStartedAt, {
+        cacheHit: true,
+        errorCode: cached.error?.code || "DISCOVERY_EMPTY"
+      });
       throw cached.error;
     }
   }
@@ -225,7 +328,7 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
     });
     try {
       fetched = await runWithAbort(provider.discoverCreators(plan, discoveryOptions), totalSignal, totalTimeoutMs, startedAt);
-      const cacheWrite = fetched.length ? setThirdPartyDiscoveryCache(thirdPartyCacheKey, fetched) : null;
+      const cacheWrite = fetched.length ? await setThirdPartyDiscoveryCache(thirdPartyCacheKey, fetched) : null;
       thirdPartyCache = {
         ...(thirdPartyCache || {}),
         enabled: !isThirdPartyCacheDisabled(),
@@ -236,7 +339,7 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
       };
     } catch (error) {
       if (totalSignal.aborted) throw createDiscoveryTimeoutError(totalTimeoutMs, startedAt);
-      const cacheWrite = setThirdPartyDiscoveryErrorCache(thirdPartyCacheKey, error);
+      const cacheWrite = await setThirdPartyDiscoveryErrorCache(thirdPartyCacheKey, error);
       thirdPartyCache = {
         ...(thirdPartyCache || {}),
         enabled: !isThirdPartyCacheDisabled(),
@@ -252,6 +355,9 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
         cacheKey: cacheWrite?.cacheKeyHash || thirdPartyCacheKey.hash,
         error
       }, error.code === "DISCOVERY_EMPTY" ? "warn" : "error");
+      options.usage?.recordStage("provider_discovery", stageStartedAt, {
+        errorCode: error.code || "PROVIDER_DISCOVERY_FAILED"
+      });
       throw error;
     }
     throwIfAborted(totalSignal, totalTimeoutMs, startedAt);
@@ -266,11 +372,15 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
       cacheStored: Boolean(thirdPartyCache?.stored),
       cacheKey: thirdPartyCache?.key || ""
     });
+    options.usage?.recordStage("provider_discovery", stageStartedAt, {
+      fetched: fetched.length,
+      rawFetched: sourceDiagnostics?.rawFetched ?? fetched.length
+    });
   }
 
   if (!fetched.length) {
     const error = new DiscoveryEmptyError("真实数据源未返回候选账号，请调整关键词或配置 KOL_DATA_API_URL 三方数据源。");
-    const cacheWrite = thirdPartyCacheKey ? setThirdPartyDiscoveryErrorCache(thirdPartyCacheKey, error) : null;
+    const cacheWrite = thirdPartyCacheKey ? await setThirdPartyDiscoveryErrorCache(thirdPartyCacheKey, error) : null;
     thirdPartyCache = {
       ...(thirdPartyCache || {}),
       enabled: !isThirdPartyCacheDisabled(),
@@ -286,6 +396,9 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
       cacheKey: thirdPartyCache.key,
       error
     }, "warn");
+    options.usage?.recordStage("provider_discovery", stageStartedAt, {
+      errorCode: error.code
+    });
     throw error;
   }
 
@@ -342,6 +455,9 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
         reviewed: aiReview?.reviewed || aiResult.creators?.length || 0,
         fallback: aiReview?.fallback || ""
       });
+      options.usage?.recordStage("ai_review", stageStartedAt, {
+        reviewed: aiReview?.reviewed || aiResult.creators?.length || 0
+      });
     } catch (error) {
       if (totalSignal.aborted) throw createDiscoveryTimeoutError(totalTimeoutMs, startedAt);
       logDiscovery(logger, "ai_review.fallback", stageStartedAt, {
@@ -353,6 +469,9 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
         error: error.message,
         fallback: "discovery-rules-v1"
       };
+      options.usage?.recordStage("ai_review", stageStartedAt, {
+        errorCode: error.code || "AI_REVIEW_FAILED"
+      });
     }
   }
 
@@ -464,6 +583,8 @@ export async function discoverCreators(briefInput = {}, registry, options = {}) 
 function buildRuleAnalyzedCreator(creator, baseMatch = {}, filters = DEFAULT_FILTERS) {
   const quality = analyzeCreatorQuality(creator);
   const followerUnknownPenalty = getUnknownFollowerPenalty(creator, filters);
+  const featureEvidenceGaps = getFeatureEvidenceGaps(creator, filters);
+  const featureEvidencePenalty = calculateFeatureEvidencePenalty(featureEvidenceGaps);
   const finalScore = calculateFinalScore(baseMatch.score || 0, quality, followerUnknownPenalty);
   const followerUnknownConcern = followerUnknownPenalty ? ["粉丝数未知，已降权处理"] : [];
 
@@ -475,12 +596,14 @@ function buildRuleAnalyzedCreator(creator, baseMatch = {}, filters = DEFAULT_FIL
       score: finalScore,
       provider: "discovery-rules-v1",
       reasons: buildDiscoveryReasons(baseMatch, quality),
-      concerns: [...(baseMatch.concerns || []), ...quality.concerns, ...followerUnknownConcern],
+      concerns: uniqueStrings([...(baseMatch.concerns || []), ...quality.concerns, ...followerUnknownConcern]).slice(0, 12),
       dimensions: {
         ...(baseMatch.dimensions || {}),
         baseMatch: baseMatch.score || 0,
         quality: quality.score,
         followerUnknownPenalty,
+        featureEvidencePenalty,
+        featureEvidenceGaps,
         sourceRelevance: creator.relevanceScore ?? creator.discovery?.relevanceScore ?? null,
         fakeFollowerRisk: quality.fakeFollowerRisk
       }
@@ -807,6 +930,8 @@ function getFilteredReason(creator, filters) {
   }
   const traitValidation = validateBasicTraitConstraints(creator, filters.basicTraits || []);
   if (traitValidation?.reason) return traitValidation.reason;
+  const countryValidation = validateCountryFilter(creator, filters.country);
+  if (countryValidation?.reason) return countryValidation.reason;
   if (creator.quality?.concerns?.some((concern) => concern.includes("品牌号"))) return "疑似品牌号";
   if (creator.quality?.concerns?.some((concern) => concern.includes("搬运") || concern.includes("商品"))) return "疑似聚合或商品号";
   if (creator.quality?.concerns?.some((concern) => concern.includes("无法验证创作者身份"))) return "信息不足";
@@ -885,15 +1010,100 @@ function isLikelyBrandAccount(creator, haystack) {
 }
 
 function normalizeFilters(filters, brief = {}) {
-  const briefMinFollowers = brief.followerRange?.min || 0;
-  const minFollowers = filters.minFollowers || filters.minFollowerCount || briefMinFollowers || DEFAULT_FILTERS.minFollowers;
+  const briefMinFollowers = Math.max(0, Number(brief.followerRange?.min || 0) || 0);
+  const hasMinFollowers = filters.minFollowers !== undefined && filters.minFollowers !== null && filters.minFollowers !== "";
+  const hasLegacyMinFollowers = filters.minFollowerCount !== undefined && filters.minFollowerCount !== null && filters.minFollowerCount !== "";
+  const minFollowers = hasMinFollowers
+    ? filters.minFollowers
+    : hasLegacyMinFollowers
+      ? filters.minFollowerCount
+      : briefMinFollowers || DEFAULT_FILTERS.minFollowers;
   return {
     ...DEFAULT_FILTERS,
     ...filters,
     minFollowers: Math.max(0, Number(minFollowers) || 0),
+    country: normalizeCountryCode(filters.country),
     basicTraits: extractBasicTraitConstraints(brief, filters),
     maxFakeFollowerRisk: filters.maxFakeFollowerRisk || DEFAULT_FILTERS.maxFakeFollowerRisk
   };
+}
+
+function validateCountryFilter(creator, countryCode) {
+  const normalized = normalizeCountryCode(countryCode);
+  if (!normalized) return null;
+
+  const selected = COUNTRY_FILTERS[normalized];
+  if (!selected) return null;
+
+  const evidenceText = buildCountryEvidenceText(creator);
+  if (matchesCountry(evidenceText, selected)) return null;
+
+  const matchedOther = Object.entries(COUNTRY_FILTERS)
+    .find(([code, definition]) => code !== normalized && matchesCountry(evidenceText, definition));
+
+  return matchedOther ? {
+    reason: `国家不匹配：${selected.label}`,
+    country: normalized
+  } : null;
+}
+
+function getFeatureEvidenceGaps(creator, filters = {}) {
+  return [
+    ...getBasicTraitEvidenceGaps(creator, filters.basicTraits || []).map((gap) => ({
+      ...gap,
+      type: "basic-trait",
+      id: gap.traitId
+    })),
+    getCountryEvidenceGap(creator, filters.country)
+  ].filter(Boolean);
+}
+
+function getCountryEvidenceGap(creator, countryCode) {
+  const normalized = normalizeCountryCode(countryCode);
+  if (!normalized) return null;
+
+  const selected = COUNTRY_FILTERS[normalized];
+  if (!selected) return null;
+
+  const evidenceText = buildCountryEvidenceText(creator);
+  if (matchesCountry(evidenceText, selected)) return null;
+
+  const matchedOther = Object.entries(COUNTRY_FILTERS)
+    .find(([code, definition]) => code !== normalized && matchesCountry(evidenceText, definition));
+  if (matchedOther) return null;
+
+  return {
+    type: "country",
+    id: `country:${normalized}`,
+    category: "country",
+    label: selected.label,
+    reason: `国家证据不足：${selected.label}`
+  };
+}
+
+function calculateFeatureEvidencePenalty(gaps = []) {
+  if (!gaps.length) return 0;
+  return Math.min(gaps.length * FEATURE_EVIDENCE_GAP_PENALTY, FEATURE_EVIDENCE_GAP_MAX_PENALTY);
+}
+
+function buildCountryEvidenceText(creator = {}) {
+  return [
+    creator.name,
+    creator.handle,
+    creator.bio,
+    creator.discovery?.summary,
+    creator.discovery?.evidenceText,
+    ...(creator.tags || [])
+  ].join(" ");
+}
+
+function matchesCountry(text, countryDefinition) {
+  return (countryDefinition?.patterns || []).some((pattern) => pattern.test(String(text || "")));
+}
+
+function normalizeCountryCode(countryCode) {
+  const normalized = String(countryCode || "").trim().toUpperCase();
+  return COUNTRY_FILTERS[normalized] ? normalized : "";
 }
 
 function calculateDiscoveryFetchLimit(platform, requestedLimit) {
@@ -912,7 +1122,8 @@ function getUnknownFollowerPenalty(creator, filters) {
 function applyPostProcessingScores(creators, feedbackSummary = {}) {
   return creators.map((creator) => {
     const feedbackBoost = calculateFeedbackBoost(creator, feedbackSummary);
-    const score = calculateAiAdjustedScore(creator.score ?? creator.match?.score ?? 0, creator.aiReview, feedbackBoost);
+    const featureEvidencePenalty = Number(creator.match?.dimensions?.featureEvidencePenalty || 0);
+    const score = calculateAiAdjustedScore(creator.score ?? creator.match?.score ?? 0, creator.aiReview, feedbackBoost, featureEvidencePenalty);
     return {
       ...creator,
       score,
@@ -928,7 +1139,7 @@ function applyPostProcessingScores(creators, feedbackSummary = {}) {
   });
 }
 
-function calculateAiAdjustedScore(baseScore, aiReview, feedbackBoost = 0) {
+function calculateAiAdjustedScore(baseScore, aiReview, feedbackBoost = 0, extraPenalty = 0) {
   const reviewScores = [
     aiReview?.semanticScore,
     aiReview?.collaborationFit,
@@ -942,7 +1153,7 @@ function calculateAiAdjustedScore(baseScore, aiReview, feedbackBoost = 0) {
   const blended = aiScore == null
     ? Number(baseScore || 0)
     : Math.round(Number(baseScore || 0) * 0.58 + aiScore * 0.42);
-  return clamp(blended + feedbackBoost - personalPenalty - rejectPenalty, 0, 100);
+  return clamp(blended + feedbackBoost - personalPenalty - rejectPenalty - extraPenalty, 0, 100);
 }
 
 function calculateFeedbackBoost(creator, feedbackSummary = {}) {
@@ -1057,7 +1268,7 @@ function countReasons(rejected) {
 }
 
 function normalizePlatform(platform) {
-  const normalized = String(platform || "x").toLowerCase();
+  const normalized = String(platform || "tiktok").toLowerCase();
   return normalized === "twitter" ? "x" : normalized;
 }
 
@@ -1094,17 +1305,32 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function uniqueStrings(values = []) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+  }
+  return result;
+}
+
 export const __testing = {
   applyPostProcessingScores,
+  buildRuleAnalyzedCreator,
   calculateAiAdjustedScore,
   calculateDiscoveryFetchLimit,
   calculateFinalScore,
   calculateFeedbackBoost,
   formatDuration,
+  getFeatureEvidenceGaps,
   getFilteredReason,
   hasMinimumProfileEvidence,
   getUnknownFollowerPenalty,
   normalizeFilters,
   serializeFeedbackSummary,
-  summarizeFeedback
+  summarizeFeedback,
+  validateCountryFilter
 };

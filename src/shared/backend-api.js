@@ -1,4 +1,7 @@
-const API_BASE_URL = "http://127.0.0.1:8787";
+import { buildBackendHeaders, getBackendApiBaseUrl } from "./backend-config.js";
+import { formatBackendErrorMessage } from "./backend-errors.js";
+
+const API_BASE_URL = getBackendApiBaseUrl();
 const DISCOVERY_CLIENT_TIMEOUT_MS = 10 * 60 * 1000 + 15_000;
 
 export async function discoverCreatorsFromBackend({
@@ -52,7 +55,7 @@ export async function postBackendJson(path, payload, options = {}) {
   try {
     const response = await fetch(`${API_BASE_URL}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: buildBackendHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(payload),
       signal: controller.signal
     });
@@ -69,7 +72,7 @@ export async function postBackendJson(path, payload, options = {}) {
       throw new Error(options.timeoutMessage || `后端请求超过 ${formatDuration(timeoutMs)} 未返回。`);
     }
     if (/Failed to fetch|NetworkError|Load failed/i.test(error?.message || "")) {
-      throw new Error("无法连接本地后端，请确认 KOL Scout API 已启动在 http://127.0.0.1:8787。");
+      throw new Error(`无法连接 KOL Scout API，请确认后端已启动在 ${API_BASE_URL}。`);
     }
     throw error;
   } finally {
@@ -86,7 +89,7 @@ export async function postBackendJsonStream(path, payload, options = {}) {
   try {
     const response = await fetch(`${API_BASE_URL}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: buildBackendHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(payload),
       signal: controller.signal
     });
@@ -134,7 +137,7 @@ export async function postBackendJsonStream(path, payload, options = {}) {
       throw new Error(options.timeoutMessage || `后端请求超过 ${formatDuration(timeoutMs)} 未返回。`);
     }
     if (/Failed to fetch|NetworkError|Load failed/i.test(error?.message || "")) {
-      throw new Error("无法连接本地后端，请确认 KOL Scout API 已启动在 http://127.0.0.1:8787。");
+      throw new Error(`无法连接 KOL Scout API，请确认后端已启动在 ${API_BASE_URL}。`);
     }
     throw error;
   } finally {
@@ -153,7 +156,7 @@ function parseJsonResponse(text) {
 }
 
 function buildBackendError(response, data = {}) {
-  const error = new Error(data.error || `后端请求失败：${response.status}`);
+  const error = new Error(formatBackendErrorMessage(data, `后端请求失败：${response.status}`));
   error.statusCode = response.status;
   error.code = data.code || "";
   error.requestId = data.requestId || "";

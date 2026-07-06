@@ -837,6 +837,48 @@ select:focus {
   cursor: help;
 }
 
+.feature-evidence {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--amber) 20%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--amber-soft) 72%, transparent);
+}
+
+.feature-evidence[hidden] {
+  display: none;
+}
+
+.feature-evidence-label {
+  flex: 0 0 auto;
+  color: var(--amber);
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 1.5;
+}
+
+.feature-evidence-list {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.feature-evidence-chip {
+  max-width: 100%;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--amber) 74%, var(--ink));
+  background: color-mix(in srgb, white 56%, var(--amber-soft));
+  font-size: 11px;
+  font-weight: 670;
+  line-height: 1.25;
+  cursor: help;
+}
+
 .chips {
   display: flex;
   flex-wrap: wrap;

@@ -9,9 +9,10 @@ import {
   setThirdPartyDiscoveryErrorCache
 } from "../backend/services/discovery-cache-service.js";
 
-test("Third-party discovery cache normalizes identical keywords for a 10-minute hit", () => {
+test("Third-party discovery cache normalizes identical keywords for a 10-minute hit", async () => {
   delete process.env.DISCOVERY_THIRD_PARTY_CACHE_DISABLED;
-  __testing.clearThirdPartyDiscoveryCache();
+  __testing.configureMemoryCache({ now: () => 1_000 });
+  await __testing.clearThirdPartyDiscoveryCache();
   const firstKey = buildThirdPartyDiscoveryCacheKey({
     platform: "tiktok",
     provider: "fallback-search",
@@ -34,10 +35,11 @@ test("Third-party discovery cache normalizes identical keywords for a 10-minute 
     enumerable: false
   });
 
-  setThirdPartyDiscoveryCache(firstKey, creators, 1_000);
-  const hit = getThirdPartyDiscoveryCache(secondKey, 2_000);
+  await setThirdPartyDiscoveryCache(firstKey, creators, 1_000);
+  const hit = await getThirdPartyDiscoveryCache(secondKey, 2_000);
 
   assert.equal(firstKey.hash, secondKey.hash);
+  assert.notEqual(firstKey.key, firstKey.raw);
   assert.equal(hit.kind, "success");
   assert.equal(hit.ageMs, 1_000);
   assert.equal(hit.ttlMs, 10 * 60 * 1000);
@@ -46,9 +48,10 @@ test("Third-party discovery cache normalizes identical keywords for a 10-minute 
   assert.notEqual(hit.creators, creators);
 });
 
-test("Third-party discovery cache stores business-empty results but expires them", () => {
+test("Third-party discovery cache stores business-empty results but expires them", async () => {
   delete process.env.DISCOVERY_THIRD_PARTY_CACHE_DISABLED;
-  __testing.clearThirdPartyDiscoveryCache();
+  __testing.configureMemoryCache({ now: () => 5_000 });
+  await __testing.clearThirdPartyDiscoveryCache();
   const key = buildThirdPartyDiscoveryCacheKey({
     platform: "tiktok",
     provider: "fallback-search",
@@ -62,9 +65,9 @@ test("Third-party discovery cache stores business-empty results but expires them
   error.code = "DISCOVERY_EMPTY";
   error.statusCode = 200;
 
-  setThirdPartyDiscoveryErrorCache(key, error, 5_000);
-  const hit = getThirdPartyDiscoveryCache(key, 6_000);
-  const expired = getThirdPartyDiscoveryCache(key, 5_000 + getThirdPartyCacheTtlMs() + 1);
+  await setThirdPartyDiscoveryErrorCache(key, error, 5_000);
+  const hit = await getThirdPartyDiscoveryCache(key, 6_000);
+  const expired = await getThirdPartyDiscoveryCache(key, 5_000 + getThirdPartyCacheTtlMs() + 1);
 
   assert.equal(hit.kind, "error");
   assert.equal(hit.error.code, "DISCOVERY_EMPTY");

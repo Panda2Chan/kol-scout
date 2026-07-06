@@ -53,10 +53,18 @@ npm run backend
 http://127.0.0.1:8787
 ```
 
+本地开发默认不会启用公网鉴权、IP 限速、每日额度、用户并发限制和队列容量拒绝。需要测试这些能力时，在 `.env` 中显式开启对应配置。
+
 检查代码和 manifest：
 
 ```bash
 npm run check
+```
+
+运行测试：
+
+```bash
+npm test
 ```
 
 ## 安装插件
@@ -73,6 +81,41 @@ npm run check
 - `POST /api/match/creators`
 - `POST /api/search/creators`
 - `POST /api/discover/creators`
+
+## 部署和发布配置
+
+后端运行配置：
+
+- `APP_ENV`：运行环境，默认 `development`，生产使用 `production`
+- `HOST`：监听地址，本地默认 `127.0.0.1`，容器或公网部署常用 `0.0.0.0`
+- `PORT`：监听端口，默认 `8787`
+- `CORS_ORIGINS`：允许的来源，默认 `*`
+- `PUBLIC_BASE_URL`：公网后端地址，仅用于健康检查和部署自检
+
+扩展发布配置：
+
+- `KOL_API_BASE_URL`：扩展访问的后端 API 地址
+- `KOL_API_AUTH_TOKEN`：扩展请求后端时携带的 token，后续鉴权任务启用
+
+生产扩展包必须使用 HTTPS API 地址：
+
+```bash
+KOL_API_BASE_URL=https://api.example.com npm run package:extension
+```
+
+打包产物默认输出到：
+
+```text
+dist/kol-scout-extension
+```
+
+本地开发包可用：
+
+```bash
+npm run package:extension:dev
+```
+
+生产后端建议放在 HTTPS 反向代理后面，例如 Nginx、Caddy 或云厂商负载均衡。扩展的 `host_permissions` 会在打包时根据 `KOL_API_BASE_URL` 生成。
 
 ## AI 和数据源配置
 
@@ -116,6 +159,28 @@ AI 后处理调优可选：
 - `DISCOVERY_THIRD_PARTY_CACHE_DISABLED=true`：关闭三方召回缓存
 - `DISCOVERY_DEBUG_LOGS=false`：关闭全站匹配阶段耗时日志，默认开启
 - `DISCOVERY_LOG_QUERIES=true`：在 TikTok 搜索日志中打印 query 样本，默认关闭
+
+公网访问控制配置：
+
+- `AUTH_REQUIRED`：是否要求 bearer token，本地默认 `false`，生产默认 `true`
+- `API_AUTH_TOKEN` / `API_AUTH_TOKENS`：允许访问后端的 token
+- `ACCESS_LIMITS_ENABLED`：是否启用公网限流和额度，本地默认 `false`，生产默认 `true`
+- `IP_RATE_LIMIT_WINDOW_MS`：IP 限速窗口
+- `IP_RATE_LIMIT_MAX_REQUESTS`：单 IP 每窗口最大请求数
+- `USER_DAILY_DISCOVERY_QUOTA`：单身份每日 discovery 额度
+- `USER_CONCURRENT_DISCOVERY_LIMIT`：单身份并发 discovery 上限
+
+队列、用量和缓存配置：
+
+- `DISCOVERY_QUEUE_LIMITS_ENABLED`：是否启用队列容量限制，本地默认 `false`，生产默认 `true`
+- `DISCOVERY_MAX_CONCURRENT`：全局 discovery 最大并发数
+- `DISCOVERY_QUEUE_MAX_SIZE`：最大排队数量
+- `DISCOVERY_QUEUE_TIMEOUT_MS`：队列等待超时
+- `USAGE_SINK`：用量记录写入方式，支持 `jsonl`、`redis`、`none`
+- `USAGE_JSONL_PATH`：开发环境 JSONL 用量日志路径
+- `CACHE_DRIVER`：缓存驱动，支持 `memory`、`redis`
+- `REDIS_URL`：Redis 连接地址
+- `AI_PLAN_CACHE_TTL_MS`：AI plan 缓存 TTL
 
 保存、忽略、删除等用户反馈会保存在本地 `chrome.storage.local`，
 下一轮全站匹配会把反馈摘要提交给后端，用于优化 AI 搜索规划和候选重排。

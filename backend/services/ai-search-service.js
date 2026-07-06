@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { buildCacheKey, createMemoryCacheAdapter } from "./cache-service.js";
 
 const DEFAULT_MODEL = "gpt-5.5";
 const DEFAULT_TIMEOUT_MS = 45_000;
@@ -9,7 +10,13 @@ const AI_POSTPROCESS_TIMEOUT_MS = 45_000;
 const AI_POSTPROCESS_LIMIT = 30;
 const PLAN_CACHE_TTL_MS = 10 * 60 * 1000;
 const AI_WEB_SEARCH_TIMEOUT_MS = 90_000;
-const planCache = new Map();
+let planCacheAdapter = createMemoryCacheAdapter();
+let planCacheTtlMs = PLAN_CACHE_TTL_MS;
+
+export function configureAiSearchCache(options = {}) {
+  planCacheAdapter = options.cacheAdapter || createMemoryCacheAdapter();
+  planCacheTtlMs = Number(options.ttlMs || PLAN_CACHE_TTL_MS);
+}
 
 const SYSTEM_PROMPT = `
 你是 KOL 运营搜索规划器。把用户需求改写成 X/Twitter 站内搜索策略。
@@ -70,7 +77,7 @@ export async function buildAiCreatorSearchPlan(brief, fallbackPlan, options = {}
 
   const prompt = buildKolOpsPrompt(brief, basePlan, options);
   const cacheKey = buildPlanCacheKey(brief, basePlan, config, options.feedbackSummary);
-  const cached = getCachedPlan(cacheKey);
+  const cached = await getCachedPlan(cacheKey);
   if (cached) return cached;
 
   try {
@@ -98,7 +105,7 @@ export async function buildAiCreatorSearchPlan(brief, fallbackPlan, options = {}
         qualitySignals: normalized.qualitySignals
       }
     };
-    planCache.set(cacheKey, { expiresAt: Date.now() + PLAN_CACHE_TTL_MS, plan });
+    await planCacheAdapter.set(cacheKey, { plan }, { ttlMs: planCacheTtlMs });
     return plan;
   } catch (error) {
     if (requireAi) {
@@ -234,10 +241,10 @@ export async function postProcessCreatorsWithAi(brief, creators = [], options = 
 }
 
 function buildPlanCacheKey(brief, fallbackPlan, config, feedbackSummary = {}) {
-  return [
+  return buildCacheKey("ai-plan", [
     config.provider,
     config.model,
-    fallbackPlan.platform || "x",
+    fallbackPlan.platform || "tiktok",
     String(brief.rawText || "").trim().toLowerCase(),
     (fallbackPlan.positiveTerms || []).join("|"),
     (fallbackPlan.negativeTerms || []).join("|"),
@@ -246,16 +253,12 @@ function buildPlanCacheKey(brief, fallbackPlan, config, feedbackSummary = {}) {
     feedbackSummary.saved || 0,
     feedbackSummary.ignored || 0,
     feedbackSummary.removed || 0
-  ].join("::");
+  ]);
 }
 
-function getCachedPlan(cacheKey) {
-  const cached = planCache.get(cacheKey);
+async function getCachedPlan(cacheKey) {
+  const cached = await planCacheAdapter.get(cacheKey);
   if (!cached) return null;
-  if (cached.expiresAt < Date.now()) {
-    planCache.delete(cacheKey);
-    return null;
-  }
   return {
     ...cached.plan,
     aiSearch: {
@@ -351,7 +354,7 @@ function normalizeConfig(config) {
 }
 
 function buildKolOpsPrompt(brief, fallbackPlan, options) {
-  const platform = options.platform || fallbackPlan.platform || "x";
+  const platform = options.platform || fallbackPlan.platform || "tiktok";
   const user = [
     `platform=${platform}`,
     `locale=${options.locale || "zh-CN"}`,
@@ -374,12 +377,18 @@ function buildSearchPlanSystemPrompt(platform) {
 }
 
 function buildAiWebSearchPrompt(brief, plan, options) {
+  const platform = options.platform || plan.platform || "tiktok";
+  const isTikTok = String(platform).toLowerCase() === "tiktok";
+  const platformName = isTikTok ? "TikTok" : "X/Twitter";
+  const profileHint = isTikTok ? "https://www.tiktok.com/@..." : "https://x.com/...";
+  const pageRule = isTikTok ? "TikTok @ profile page" : "X/Twitter profile page";
+
   const system = `
-你是 KOL 运营全站搜索智能体。必须使用 web_search 查找真实公开 X/Twitter OP 主页。
+你是 KOL 运营全站搜索智能体。必须使用 web_search 查找真实公开 ${platformName} OP 主页。
 只返回严格 JSON，不要解释，不要编造账号。
-JSON 格式：{"creators":[{"handle":"@...","name":"","profileUrl":"https://x.com/...","bio":"","followers":null,"email":"","evidence":"","tags":[]}]}
+JSON 格式：{"creators":[{"handle":"@...","name":"","profileUrl":"${profileHint}","bio":"","followers":null,"email":"","evidence":"","tags":[]}]}
 通用搜索规范：
-1. 必须真实使用 web_search 检索公开网页，优先 X/Twitter profile page。
+1. 必须真实使用 web_search 检索公开网页，优先 ${pageRule}。
 2. 搜索 query 要覆盖用户 Brief 的地区/性别/垂类/内容形态/语言同义词。
 3. 只返回个人 OP/creator/influencer，不返回品牌、店铺、新闻媒体、机构、聚合搬运、bot、成人擦边、抽奖互关账号。
 4. 每个候选必须有 profileUrl 和 handle；必须尽量给出 bio、followers、email、evidence。
@@ -389,7 +398,7 @@ JSON 格式：{"creators":[{"handle":"@...","name":"","profileUrl":"https://x.co
 `.trim();
 
   const user = [
-    `platform=${options.platform || plan.platform || "x"}`,
+    `platform=${platform}`,
     `locale=${options.locale || "zh-CN"}`,
     `userInput=${brief.rawText || ""}`,
     `positiveTerms=${(plan.positiveTerms || []).join(", ")}`,
@@ -397,7 +406,7 @@ JSON 格式：{"creators":[{"handle":"@...","name":"","profileUrl":"https://x.co
     `searchHints=${(plan.aiSearch?.queries || []).join(" | ")}`,
     `filters=${JSON.stringify(options.filters || {})}`,
     `limit=${Math.min(Number(options.limit || 8), 8)}`,
-    "Return only real X/Twitter profile pages."
+    `Return only real ${platformName} profile pages.`
   ].join("\n");
 
   return { system, user };
@@ -419,7 +428,7 @@ JSON 格式：{"reviews":[{"id":"","semanticScore":0,"evidenceConfidence":0,"col
 `.trim();
 
   const user = [
-    `platform=${options.platform || "x"}`,
+    `platform=${options.platform || "tiktok"}`,
     `locale=${options.locale || "zh-CN"}`,
     `brief=${brief.rawText || ""}`,
     `filters=${JSON.stringify(options.filters || {})}`,
@@ -988,8 +997,10 @@ function escapeRegExp(value) {
 }
 
 export const __testing = {
+  buildAiWebSearchPrompt,
   compactFeedbackSummary,
   compactCreatorForAi,
+  configureAiSearchCache,
   mergeAiCreatorReviews,
   normalizeAiCreatorReviews
 };

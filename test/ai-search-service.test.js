@@ -2,6 +2,19 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { __testing } from "../backend/services/ai-search-service.js";
 
+test("AI web search prompt follows TikTok by default", () => {
+  const prompt = __testing.buildAiWebSearchPrompt(
+    { rawText: "找美妆短视频创作者" },
+    { positiveTerms: ["beauty"], negativeTerms: [], aiSearch: { queries: [] } },
+    {}
+  );
+
+  assert.match(prompt.system, /TikTok/);
+  assert.match(prompt.system, /tiktok\.com\/@\.\.\./);
+  assert.match(prompt.user, /platform=tiktok/);
+  assert.doesNotMatch(prompt.user, /X\/Twitter/);
+});
+
 test("AI creator reviews normalize by id and handle", () => {
   const reviews = __testing.normalizeAiCreatorReviews({
     reviews: [

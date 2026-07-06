@@ -4,6 +4,7 @@ node_modules/
 # Local runtime and secrets
 .env
 .env.*
+!.env.example
 *.log
 *.local
 
@@ -13,6 +14,8 @@ build/
 coverage/
 .cache/
 .codegraph/
+.codex/skills/openspec-*/
+backend/logs/
 
 # Editor state
 .idea/

@@ -7,8 +7,11 @@ import {
   setLastScan,
   upsertKols
 } from "../shared/storage.js";
+import { buildBackendHeaders, getBackendApiBaseUrl } from "../shared/backend-config.js";
+import { formatBackendErrorMessage } from "../shared/backend-errors.js";
 
-const API_BASE_URL = "http://127.0.0.1:8787";
+const API_BASE_URL = getBackendApiBaseUrl();
+const DEFAULT_MIN_FOLLOWERS = 10_000;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.action.setBadgeBackgroundColor({ color: "#276ef1" });
@@ -141,7 +144,7 @@ async function matchCandidates(brief, candidates) {
 }
 
 async function searchCreators(brief, options = {}) {
-  const platform = normalizePlatform(options.platform || brief.platforms?.[0] || "x");
+  const platform = normalizePlatform(options.platform || brief.platforms?.[0] || "tiktok");
   const response = await postJson("/api/search/creators", { brief, platform, locale: "zh-CN" });
   const plan = response.plan;
   if (!plan?.searchUrl) {
@@ -153,15 +156,16 @@ async function searchCreators(brief, options = {}) {
 }
 
 async function discoverCreators(brief, options = {}) {
-  const feedback = await getDiscoveryFeedback({ platform: options.platform || "x" });
+  const platform = normalizePlatform(options.platform || brief.platforms?.[0] || "tiktok");
+  const feedback = await getDiscoveryFeedback({ platform });
   return postJson("/api/discover/creators", {
     brief,
-    platform: options.platform || "x",
+    platform,
     limit: options.limit || 20,
     filters: options.filters || {
       minMatchScore: 50,
       minQualityScore: 55,
-      minFollowers: 0,
+      minFollowers: DEFAULT_MIN_FOLLOWERS,
       maxFakeFollowerRisk: "medium"
     },
     feedback,
@@ -223,10 +227,10 @@ function isAllowedCreatorProfileHost(hostname) {
 }
 
 function normalizePlatform(platform) {
-  const normalized = String(platform || "x").toLowerCase().replace(/\s+/g, "");
+  const normalized = String(platform || "tiktok").toLowerCase().replace(/\s+/g, "");
   if (normalized === "twitter") return "x";
   if (normalized === "tiktok" || normalized === "douyin" || normalized === "抖音") return "tiktok";
-  return normalized || "x";
+  return normalized || "tiktok";
 }
 
 async function navigateActiveTab(url) {
@@ -241,14 +245,14 @@ async function navigateActiveTab(url) {
 async function postJson(path, payload) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: buildBackendHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload)
   });
   const text = await response.text();
   const data = text ? JSON.parse(text) : {};
 
   if (!response.ok) {
-    throw new Error(data.error || `后端请求失败：${response.status}`);
+    throw new Error(formatBackendErrorMessage(data, `后端请求失败：${response.status}`));
   }
 
   return data;

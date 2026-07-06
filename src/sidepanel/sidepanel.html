@@ -32,14 +32,14 @@
 
         <label class="field compact">
           <span>粉丝数下限</span>
-          <input id="minFollowers" type="number" min="0" step="1000" placeholder="10000" />
+          <input id="minFollowers" type="number" min="0" step="1000" placeholder="不限制" />
         </label>
 
         <label class="field compact">
           <span>目标平台</span>
           <select id="platformSelect" class="select-control">
-            <option value="x">X</option>
             <option value="tiktok">TikTok</option>
+            <option value="x">X</option>
           </select>
         </label>
 
@@ -144,6 +144,7 @@
         </div>
         <p class="bio"></p>
         <p class="match-reasons"></p>
+        <div class="feature-evidence" hidden></div>
         <div class="chips"></div>
         <p class="item-notice" hidden></p>
         <div class="card-actions">

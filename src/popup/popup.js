@@ -18,7 +18,7 @@ const state = {
   loadingTimer: null,
   loadingStartedAt: 0,
   loadingStep: 0,
-  platform: "x",
+  platform: "tiktok",
   country: "",
   theme: "system",
   busy: false,
@@ -426,7 +426,7 @@ async function hydrateBrief() {
 }
 
 function render() {
-  elements.platformSelect.value = state.platform || "x";
+  elements.platformSelect.value = state.platform || "tiktok";
   if (elements.countrySelect) elements.countrySelect.value = state.country || "";
   renderThemeControl();
   elements.savedCount.textContent = state.saved.length;
@@ -802,7 +802,7 @@ function normalizePlatform(value, briefText = "") {
 
   const lower = String(briefText || "").toLowerCase();
   if (/tiktok|tik tok|抖音|短视频|带货视频/.test(lower)) return "tiktok";
-  return "x";
+  return "tiktok";
 }
 
 function platformLabel(platform) {

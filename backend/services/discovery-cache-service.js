@@ -1,10 +1,15 @@
 import { createHash } from "node:crypto";
+import { createMemoryCacheAdapter } from "./cache-service.js";
 
 const DEFAULT_CACHE_TTL_MS = 10 * 60 * 1000;
 const MAX_CACHE_ENTRIES = 120;
 const DISABLED_VALUES = new Set(["1", "true", "yes", "on"]);
 
-const thirdPartyDiscoveryCache = new Map();
+let discoveryCacheAdapter = createMemoryCacheAdapter();
+
+export function configureDiscoveryCache(options = {}) {
+  discoveryCacheAdapter = options.cacheAdapter || createMemoryCacheAdapter();
+}
 
 export function buildThirdPartyDiscoveryCacheKey({
   platform,
@@ -26,17 +31,18 @@ export function buildThirdPartyDiscoveryCacheKey({
 
   return {
     raw: payload,
-    hash: createHash("sha256").update(payload).digest("hex").slice(0, 16)
+    hash: createHash("sha256").update(payload).digest("hex").slice(0, 16),
+    key: `kol-scout:third-party-discovery:${createHash("sha256").update(payload).digest("hex").slice(0, 24)}`
   };
 }
 
-export function getThirdPartyDiscoveryCache(cacheKey, now = Date.now()) {
+export async function getThirdPartyDiscoveryCache(cacheKey, now = Date.now()) {
   if (isThirdPartyCacheDisabled()) return null;
-  const entry = thirdPartyDiscoveryCache.get(cacheKey.raw);
+  const entry = await discoveryCacheAdapter.get(cacheKey.key);
   if (!entry) return null;
 
   if (entry.expiresAt <= now) {
-    thirdPartyDiscoveryCache.delete(cacheKey.raw);
+    await discoveryCacheAdapter.delete(cacheKey.key);
     return null;
   }
 
@@ -51,7 +57,7 @@ export function getThirdPartyDiscoveryCache(cacheKey, now = Date.now()) {
   };
 }
 
-export function setThirdPartyDiscoveryCache(cacheKey, creators, now = Date.now()) {
+export async function setThirdPartyDiscoveryCache(cacheKey, creators, now = Date.now()) {
   if (isThirdPartyCacheDisabled()) return null;
   const ttlMs = getThirdPartyCacheTtlMs();
   const entry = {
@@ -61,14 +67,14 @@ export function setThirdPartyDiscoveryCache(cacheKey, creators, now = Date.now()
     ttlMs,
     payload: snapshotCreators(creators)
   };
-  writeCacheEntry(cacheKey.raw, entry, now);
+  await writeCacheEntry(cacheKey.key, entry, now);
   return {
     cacheKeyHash: cacheKey.hash,
     ttlMs
   };
 }
 
-export function setThirdPartyDiscoveryErrorCache(cacheKey, error, now = Date.now()) {
+export async function setThirdPartyDiscoveryErrorCache(cacheKey, error, now = Date.now()) {
   if (isThirdPartyCacheDisabled()) return null;
   if (!isCacheableDiscoveryError(error)) return null;
 
@@ -80,7 +86,7 @@ export function setThirdPartyDiscoveryErrorCache(cacheKey, error, now = Date.now
     ttlMs,
     payload: snapshotError(error)
   };
-  writeCacheEntry(cacheKey.raw, entry, now);
+  await writeCacheEntry(cacheKey.key, entry, now);
   return {
     cacheKeyHash: cacheKey.hash,
     ttlMs
@@ -96,20 +102,8 @@ export function isThirdPartyCacheDisabled() {
   return DISABLED_VALUES.has(String(process.env.DISCOVERY_THIRD_PARTY_CACHE_DISABLED || "").toLowerCase());
 }
 
-function writeCacheEntry(key, entry, now = Date.now()) {
-  thirdPartyDiscoveryCache.set(key, entry);
-  pruneCache(now);
-}
-
-function pruneCache(now = Date.now()) {
-  for (const [key, entry] of thirdPartyDiscoveryCache.entries()) {
-    if (entry.expiresAt <= now) thirdPartyDiscoveryCache.delete(key);
-  }
-
-  while (thirdPartyDiscoveryCache.size > MAX_CACHE_ENTRIES) {
-    const oldestKey = thirdPartyDiscoveryCache.keys().next().value;
-    thirdPartyDiscoveryCache.delete(oldestKey);
-  }
+async function writeCacheEntry(key, entry) {
+  await discoveryCacheAdapter.set(key, entry, { ttlMs: entry.ttlMs });
 }
 
 function snapshotCreators(creators) {
@@ -192,10 +186,13 @@ function cloneJsonSafe(value) {
 }
 
 export const __testing = {
-  clearThirdPartyDiscoveryCache() {
-    thirdPartyDiscoveryCache.clear();
+  async clearThirdPartyDiscoveryCache() {
+    await discoveryCacheAdapter.clear();
   },
-  size() {
-    return thirdPartyDiscoveryCache.size;
+  async size() {
+    return discoveryCacheAdapter.size();
+  },
+  configureMemoryCache(options = {}) {
+    discoveryCacheAdapter = createMemoryCacheAdapter(options);
   }
 };

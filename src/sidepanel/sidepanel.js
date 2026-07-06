@@ -5,7 +5,30 @@ import { getDiscoveryFeedback } from "../shared/storage.js";
 
 const PANEL_STORAGE_KEY = "kolLite.sidePanel";
 const THEME_STORAGE_KEY = "kolLite.theme";
+const FILTER_DEFAULTS_VERSION = 2;
+const DEFAULT_MIN_FOLLOWERS = 10_000;
 const DEFAULT_NOTICE = "写一句你要找的人群。结果会先放进候选，确认后再保存。";
+const COUNTRY_SIGNAL_TERMS = {
+  US: ["united states", "usa", "america", "american", "california", "los angeles", "new york", "美国", "美國"],
+  GB: ["united kingdom", "uk", "britain", "british", "england", "london", "英国", "英國", "伦敦", "倫敦"],
+  CA: ["canada", "canadian", "toronto", "vancouver", "加拿大", "多伦多", "多倫多", "温哥华", "溫哥華"],
+  AU: ["australia", "australian", "sydney", "melbourne", "澳大利亚", "澳洲", "悉尼", "墨尔本", "墨爾本"],
+  JP: ["japan", "japanese", "tokyo", "osaka", "kyoto", "nagoya", "yokohama", "日本", "日本人", "日本語", "日系", "東京", "东京", "大阪", "京都", "名古屋", "横浜", "横滨", "🇯🇵"],
+  KR: ["korea", "korean", "seoul", "busan", "韩国", "韓国", "韓國", "首尔", "首爾", "釜山", "🇰🇷"],
+  SG: ["singapore", "singaporean", "新加坡", "🇸🇬"],
+  DE: ["germany", "german", "berlin", "munich", "德国", "德國", "柏林", "慕尼黑"],
+  FR: ["france", "french", "paris", "法国", "法國", "巴黎"],
+  IT: ["italy", "italian", "rome", "milan", "意大利", "义大利", "義大利", "罗马", "羅馬", "米兰", "米蘭"],
+  ES: ["spain", "spanish", "madrid", "barcelona", "西班牙", "马德里", "馬德里", "巴塞罗那", "巴塞羅那"],
+  BR: ["brazil", "brazilian", "sao paulo", "são paulo", "rio de janeiro", "巴西", "圣保罗", "聖保羅", "里约", "里約"],
+  MX: ["mexico", "mexican", "墨西哥"],
+  ID: ["indonesia", "indonesian", "jakarta", "bali", "印尼", "印度尼西亚", "印度尼西亞", "雅加达", "雅加達", "巴厘岛", "峇里"],
+  TH: ["thailand", "thai", "bangkok", "泰国", "泰國", "曼谷"],
+  VN: ["vietnam", "vietnamese", "hanoi", "saigon", "ho chi minh", "越南", "河内", "河內", "西贡", "西貢", "胡志明"],
+  PH: ["philippines", "filipino", "filipina", "manila", "菲律宾", "菲律賓", "马尼拉", "馬尼拉"],
+  MY: ["malaysia", "malaysian", "kuala lumpur", "马来西亚", "馬來西亞", "吉隆坡"],
+  IN: ["india", "indian", "delhi", "mumbai", "bangalore", "印度", "德里", "孟买", "孟買", "班加罗尔", "班加羅爾"]
+};
 const THEME_ORDER = ["system", "light", "dark"];
 const THEME_LABELS = {
   system: "跟随系统",
@@ -28,8 +51,8 @@ const LOADING_STEPS = [
 const state = {
   activeView: "candidates",
   briefText: "",
-  minFollowers: 0,
-  platform: "x",
+  minFollowers: DEFAULT_MIN_FOLLOWERS,
+  platform: "tiktok",
   country: "",
   theme: "system",
   candidates: [],
@@ -155,6 +178,7 @@ async function handleFormChange() {
   state.minFollowers = Math.max(0, Number(elements.minFollowers.value || 0) || 0);
   state.platform = normalizePlatform(elements.platformSelect.value, state.briefText);
   state.country = elements.countrySelect.value;
+  state.candidates = filterDisplayCandidates(state.candidates);
   await persistState();
 }
 
@@ -218,7 +242,7 @@ async function discoverCreators() {
     return;
   }
 
-  state.candidates = (response.candidates || []).filter((candidate) => !isSavedCreator(candidate));
+  state.candidates = filterDisplayCandidates(response.candidates || []);
   state.summary = response.summary || null;
 
   const summary = response.summary || {};
@@ -255,7 +279,7 @@ function handleDiscoveryStreamEvent(event) {
 }
 
 function mergeStreamingCandidate(candidate) {
-  if (isSavedCreator(candidate)) return;
+  if (isSavedCreator(candidate) || !passesLocalFollowerFloor(candidate) || !passesLocalCountryFilter(candidate)) return;
 
   const key = getCandidateKey(candidate);
   const index = state.candidates.findIndex((item) => getCandidateKey(item) === key);
@@ -481,7 +505,7 @@ function render() {
   normalizeReviewState();
   elements.matchBrief.value = state.briefText || "";
   elements.minFollowers.value = state.minFollowers || "";
-  elements.platformSelect.value = state.platform || "x";
+  elements.platformSelect.value = state.platform || "tiktok";
   elements.countrySelect.value = state.country || "";
   renderThemeControl();
   elements.discoverButton.disabled = state.busy;
@@ -752,6 +776,7 @@ function renderCard(creator) {
   setTextWithTooltip(fragment.querySelector(".bio"), buildBioText(creator));
   const matchReasonText = buildMatchReasonText(creator);
   setTextWithTooltip(fragment.querySelector(".match-reasons"), matchReasonText);
+  renderFeatureEvidenceGaps(fragment.querySelector(".feature-evidence"), creator);
 
   const chips = fragment.querySelector(".chips");
   for (const text of buildChips(creator).slice(0, 5)) {
@@ -877,6 +902,11 @@ function buildContactDialogContent(creator) {
   content.push(createDetailRow("风险", riskLabel(creator.quality?.fakeFollowerRisk) || "暂无风险判断"));
   content.push(createDetailRow("简介", cleanProfileBio(creator.bio) || "暂无公开简介", { multiline: true }));
   content.push(createDetailRow("匹配", buildMatchReasonText(creator).replace(/^匹配理由：/, ""), { multiline: true }));
+
+  const featureEvidenceItems = getFeatureEvidenceItems(creator);
+  if (featureEvidenceItems.length) {
+    content.push(createDetailRow("待确认", formatFeatureEvidenceText(featureEvidenceItems), { multiline: true }));
+  }
 
   const tags = buildChips(creator).slice(0, 6);
   if (tags.length) content.push(createTagRow(tags));
@@ -1082,10 +1112,10 @@ async function loadState() {
   const saved = data[PANEL_STORAGE_KEY] || {};
   state.activeView = saved.activeView === "saved" ? "saved" : "candidates";
   state.briefText = saved.briefText || "";
-  state.minFollowers = saved.minFollowers ?? 0;
-  state.platform = normalizePlatform(saved.platform || "x", state.briefText);
+  state.minFollowers = normalizeSavedMinFollowers(saved);
+  state.platform = normalizePlatform(saved.platform || "tiktok", state.briefText);
   state.country = saved.country || "";
-  state.candidates = Array.isArray(saved.candidates) ? saved.candidates : [];
+  state.candidates = filterDisplayCandidates(Array.isArray(saved.candidates) ? saved.candidates : []);
   state.summary = saved.summary || null;
   state.notice = saved.notice || DEFAULT_NOTICE;
   state.noticeType = saved.noticeType || "";
@@ -1097,6 +1127,7 @@ async function persistState() {
       activeView: state.activeView,
       briefText: state.briefText,
       minFollowers: state.minFollowers,
+      filterDefaultsVersion: FILTER_DEFAULTS_VERSION,
       platform: state.platform,
       country: state.country,
       candidates: state.candidates,
@@ -1116,6 +1147,52 @@ function buildDiscoveryFilters() {
     country: elements.countrySelect.value || "",
     maxFakeFollowerRisk: "medium"
   };
+}
+
+function filterDisplayCandidates(candidates = []) {
+  return candidates.filter((candidate) =>
+    !isSavedCreator(candidate)
+    && passesLocalFollowerFloor(candidate)
+    && passesLocalCountryFilter(candidate)
+  );
+}
+
+function passesLocalFollowerFloor(candidate) {
+  const minFollowers = Math.max(0, Number(state.minFollowers || 0) || 0);
+  if (!minFollowers) return true;
+  if (candidate.metrics?.followers == null) return false;
+  return Number(candidate.metrics.followers) >= minFollowers;
+}
+
+function passesLocalCountryFilter(candidate) {
+  const selectedCountry = String(state.country || "").toUpperCase();
+  const terms = COUNTRY_SIGNAL_TERMS[selectedCountry];
+  if (!terms?.length) return true;
+
+  const evidenceText = [
+    candidate.name,
+    candidate.handle,
+    candidate.bio,
+    candidate.discovery?.summary,
+    candidate.discovery?.evidenceText,
+    ...(candidate.tags || [])
+  ].join(" ").toLowerCase();
+
+  if (terms.some((term) => evidenceText.includes(String(term).toLowerCase()))) return true;
+
+  return !Object.entries(COUNTRY_SIGNAL_TERMS)
+    .some(([country, countryTerms]) =>
+      country !== selectedCountry
+      && countryTerms.some((term) => evidenceText.includes(String(term).toLowerCase()))
+    );
+}
+
+function normalizeSavedMinFollowers(saved = {}) {
+  const stored = Math.max(0, Number(saved.minFollowers || 0) || 0);
+  if (saved.filterDefaultsVersion !== FILTER_DEFAULTS_VERSION && stored === 0) {
+    return DEFAULT_MIN_FOLLOWERS;
+  }
+  return stored;
 }
 
 async function ignoreCandidate(creator) {
@@ -1188,11 +1265,15 @@ function cleanProfileBio(text) {
 }
 
 function buildMatchReasonText(creator) {
-  const reasons = Array.isArray(creator.match?.reasons) ? creator.match.reasons.filter(Boolean) : [];
+  const reasons = Array.isArray(creator.match?.reasons)
+    ? creator.match.reasons.filter((reason) => reason && !isFeatureEvidenceText(reason))
+    : [];
   const matchedKeywords = Array.isArray(creator.match?.matchedKeywords)
     ? creator.match.matchedKeywords.filter(Boolean)
     : [];
-  const concerns = Array.isArray(creator.match?.concerns) ? creator.match.concerns.filter(Boolean) : [];
+  const concerns = Array.isArray(creator.match?.concerns)
+    ? creator.match.concerns.filter((concern) => concern && !isFeatureEvidenceText(concern))
+    : [];
   const parts = [];
 
   if (reasons.length) {
@@ -1220,7 +1301,94 @@ function buildChips(creator) {
     creator.match?.score != null ? `关联度 ${creator.match.score}` : "",
     creator.quality?.score ? `质量 ${creator.quality.score}` : "",
     ...(creator.tags || [])
-  ].filter(Boolean);
+  ].filter((chip) => chip && !isFeatureEvidenceTag(chip));
+}
+
+function renderFeatureEvidenceGaps(container, creator) {
+  if (!container) return;
+  const items = getFeatureEvidenceItems(creator);
+  container.replaceChildren();
+  container.hidden = !items.length;
+  if (!items.length) return;
+
+  const label = document.createElement("span");
+  label.className = "feature-evidence-label";
+  label.textContent = "待确认特征";
+
+  const list = document.createElement("div");
+  list.className = "feature-evidence-list";
+  for (const item of items.slice(0, 4)) {
+    const chip = document.createElement("span");
+    chip.className = "feature-evidence-chip";
+    setTextWithTooltip(chip, item.label);
+    chip.title = item.reason || item.label;
+    list.appendChild(chip);
+  }
+
+  container.title = formatFeatureEvidenceText(items);
+  container.append(label, list);
+}
+
+function getFeatureEvidenceItems(creator) {
+  const items = [];
+  const gaps = creator.match?.dimensions?.featureEvidenceGaps || [];
+
+  for (const gap of Array.isArray(gaps) ? gaps : []) {
+    if (typeof gap === "string") {
+      items.push(normalizeFeatureEvidenceText(gap));
+    } else if (gap && typeof gap === "object") {
+      items.push({
+        label: String(gap.label || extractFeatureEvidenceLabel(gap.reason) || "待确认").trim(),
+        reason: String(gap.reason || "").trim()
+      });
+    }
+  }
+
+  for (const tag of creator.tags || []) {
+    if (isFeatureEvidenceTag(tag)) {
+      const label = String(tag).replace(/^待确认[:：]\s*/, "").trim();
+      items.push({ label, reason: `${label}证据未确认` });
+    }
+  }
+
+  for (const text of [...(creator.match?.reasons || []), ...(creator.match?.concerns || [])]) {
+    if (isFeatureEvidenceText(text)) items.push(normalizeFeatureEvidenceText(text));
+  }
+
+  const byLabel = new Map();
+  for (const item of items) {
+    if (!item?.label) continue;
+    if (!byLabel.has(item.label)) byLabel.set(item.label, item);
+  }
+  return [...byLabel.values()];
+}
+
+function normalizeFeatureEvidenceText(text) {
+  const value = String(text || "").trim();
+  return {
+    label: extractFeatureEvidenceLabel(value) || value,
+    reason: value
+  };
+}
+
+function extractFeatureEvidenceLabel(text) {
+  const value = String(text || "");
+  return value.match(/(?:国家证据不足|基础特征证据不足)[:：]\s*([^，；。]+)/)?.[1]
+    || value.match(/^([^，；。]+?)证据未确认/)?.[1]
+    || value.match(/^待确认[:：]\s*(.+)$/)?.[1]
+    || "";
+}
+
+function formatFeatureEvidenceText(items) {
+  return items.map((item) => item.reason || `${item.label}证据未确认`).join("；");
+}
+
+function isFeatureEvidenceTag(text) {
+  return /^待确认[:：]/.test(String(text || "").trim());
+}
+
+function isFeatureEvidenceText(text) {
+  return /(国家证据不足|基础特征证据不足|证据未确认|待确认[:：])/.test(String(text || ""));
 }
 
 function findContactEmail(creator) {
@@ -1282,7 +1450,7 @@ function normalizePlatform(value, briefText = "") {
 
   const lower = String(briefText || "").toLowerCase();
   if (/tiktok|tik tok|抖音|短视频|带货视频/.test(lower)) return "tiktok";
-  return "x";
+  return "tiktok";
 }
 
 function platformLabel(platform) {

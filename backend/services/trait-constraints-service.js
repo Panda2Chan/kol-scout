@@ -98,7 +98,6 @@ export function buildTraitSearchTerms(constraints = []) {
 export function validateBasicTraitConstraints(creator = {}, constraints = []) {
   for (const constraint of constraints || []) {
     const broadText = buildBroadEvidenceText(creator);
-    const profileText = buildProfileEvidenceText(creator);
 
     if (matchesAnyPattern(broadText, constraint.excludePatterns)) {
       return {
@@ -107,17 +106,29 @@ export function validateBasicTraitConstraints(creator = {}, constraints = []) {
         category: constraint.category
       };
     }
-
-    if (constraint.requireProfileEvidence && !matchesAnyPattern(profileText, constraint.includePatterns)) {
-      return {
-        reason: `基础特征证据不足：${constraint.label || "未知特征"}`,
-        traitId: constraint.id,
-        category: constraint.category
-      };
-    }
   }
 
   return null;
+}
+
+export function getBasicTraitEvidenceGaps(creator = {}, constraints = []) {
+  const gaps = [];
+
+  for (const constraint of constraints || []) {
+    const broadText = buildBroadEvidenceText(creator);
+    const profileText = buildProfileEvidenceText(creator);
+    if (matchesAnyPattern(broadText, constraint.excludePatterns)) continue;
+    if (matchesAnyPattern(profileText, constraint.includePatterns)) continue;
+
+    gaps.push({
+      reason: `基础特征证据不足：${constraint.label || "未知特征"}`,
+      traitId: constraint.id,
+      category: constraint.category,
+      label: constraint.label || "未知特征"
+    });
+  }
+
+  return gaps;
 }
 
 export function serializeBasicTraitConstraints(constraints = []) {
@@ -192,5 +203,6 @@ function escapeRegExp(value) {
 
 export const __testing = {
   extractBasicTraitConstraints,
+  getBasicTraitEvidenceGaps,
   validateBasicTraitConstraints
 };

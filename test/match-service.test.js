@@ -2,6 +2,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { buildCreatorSearchPlan } from "../backend/services/match-service.js";
 
+test("creator search defaults to TikTok", () => {
+  const plan = buildCreatorSearchPlan({ rawText: "美妆测评 creator" });
+
+  assert.equal(plan.platform, "tiktok");
+});
+
+test("TikTok has priority when multiple platforms are mentioned", () => {
+  const plan = buildCreatorSearchPlan({ rawText: "同时找 TikTok 和 X 的美妆 creator" });
+
+  assert.equal(plan.platform, "tiktok");
+});
+
 test("basic trait constraints add positive and negative search terms", () => {
   const plan = buildCreatorSearchPlan({ rawText: "女，coser，颜值，亚洲" }, { platform: "tiktok" });
 
