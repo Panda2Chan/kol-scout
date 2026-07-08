@@ -62,6 +62,117 @@ test("TikTok concurrency helpers split work and prioritize stronger candidates",
   assert.ok(__testing.candidatePriority(strong) > __testing.candidatePriority(weak));
 });
 
+test("TikTok search sources prioritize Jina when configured", () => {
+  const previousEnv = snapshotEnv(["JINA_API_KEY", "TAVILY_API_KEY", "SERPER_API_KEY", "BRAVE_SEARCH_API_KEY"]);
+  try {
+    process.env.JINA_API_KEY = "jina_test";
+    process.env.TAVILY_API_KEY = "tavily_test";
+    process.env.SERPER_API_KEY = "serper_test";
+    process.env.BRAVE_SEARCH_API_KEY = "brave_test";
+
+    assert.deepEqual(__testing.buildSearchSources().map((source) => source.name), [
+      "jina-search",
+      "tavily",
+      "serper",
+      "brave",
+      "yahoo-web-search"
+    ]);
+    assert.deepEqual(
+      __testing.buildSearchSourceGroups(__testing.buildSearchSources(), 3).map((group) =>
+        group.map((source) => source.name)
+      ),
+      [
+        ["jina-search"],
+        ["tavily", "serper", "brave"],
+        ["yahoo-web-search"]
+      ]
+    );
+  } finally {
+    restoreEnv(previousEnv);
+  }
+});
+
+test("Jina search probes quota before the real search and logs remaining quota", async () => {
+  const previousEnv = snapshotEnv(["JINA_API_KEY", "JINA_QUOTA_PROBE_ENABLED"]);
+  const previousFetch = global.fetch;
+  const calls = [];
+  const logs = [];
+  try {
+    process.env.JINA_API_KEY = "jina_test";
+    delete process.env.JINA_QUOTA_PROBE_ENABLED;
+    global.fetch = async (url) => {
+      calls.push(String(url));
+      if (calls.length === 1) {
+        return new Response("", {
+          status: 200,
+          headers: {
+            "X-RateLimit-Remaining-Requests": "10",
+            "X-RateLimit-Remaining-Tokens": "1000"
+          }
+        });
+      }
+      return new Response("1. [Creator](https://www.tiktok.com/@one) - creator", {
+        status: 200,
+        headers: {
+          "X-RateLimit-Remaining-Requests": "9"
+        }
+      });
+    };
+
+    const pages = await __testing.fetchJinaSearchPages("site:tiktok.com/@ creator", null, createTestLogger(logs));
+
+    assert.equal(calls.length, 2);
+    assert.ok(calls[0].includes("s.jina.ai"));
+    assert.deepEqual(pages, ["1. [Creator](https://www.tiktok.com/@one) - creator"]);
+    assert.ok(logs.some((entry) =>
+      entry.level === "info"
+      && entry.event === "jina_quota.probe_ok"
+      && entry.fields.rateLimit["x-ratelimit-remaining-requests"] === "10"
+    ));
+    assert.ok(logs.some((entry) => entry.event === "jina_search.rate_limit"));
+  } finally {
+    global.fetch = previousFetch;
+    restoreEnv(previousEnv);
+  }
+});
+
+test("Jina quota probe warns and skips the real search when quota is insufficient", async () => {
+  const previousEnv = snapshotEnv(["JINA_API_KEY", "JINA_QUOTA_PROBE_ENABLED"]);
+  const previousFetch = global.fetch;
+  const calls = [];
+  const logs = [];
+  try {
+    process.env.JINA_API_KEY = "jina_test";
+    delete process.env.JINA_QUOTA_PROBE_ENABLED;
+    global.fetch = async (url) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({
+        code: "AUTHZ_INSUFFICIENT_BALANCE",
+        message: "balance exhausted"
+      }), { status: 403 });
+    };
+
+    await assert.rejects(
+      __testing.fetchJinaSearchPages("site:tiktok.com/@ creator", null, createTestLogger(logs)),
+      (error) =>
+        error.name === "JinaApiError"
+        && error.statusCode === 403
+        && error.code === "AUTHZ_INSUFFICIENT_BALANCE"
+        && /额度不足/.test(error.message)
+    );
+
+    assert.equal(calls.length, 1);
+    assert.ok(logs.some((entry) =>
+      entry.level === "warn"
+      && entry.event === "jina_quota.insufficient"
+      && entry.fields.code === "AUTHZ_INSUFFICIENT_BALANCE"
+    ));
+  } finally {
+    global.fetch = previousFetch;
+    restoreEnv(previousEnv);
+  }
+});
+
 test("TikTok fallback search failure message reports local search timeout without claiming global timeout", () => {
   const message = __testing.buildFallbackSearchFailureMessage({
     queryCount: 8,
@@ -241,3 +352,31 @@ test("TikTok public profile parser reads embedded stats and avatar", () => {
   assert.equal(profile.avatarUrl, "https://p16-sign.tiktokcdn-us.com/tos-useast5-avt-0068-tx/avatar.jpeg");
   assert.equal(profile.followers, 3456);
 });
+
+function createTestLogger(entries) {
+  return {
+    info(event, fields = {}) {
+      entries.push({ level: "info", event, fields });
+    },
+    warn(event, fields = {}) {
+      entries.push({ level: "warn", event, fields });
+    },
+    error(event, fields = {}) {
+      entries.push({ level: "error", event, fields });
+    }
+  };
+}
+
+function snapshotEnv(keys) {
+  return Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+}
+
+function restoreEnv(snapshot) {
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+}

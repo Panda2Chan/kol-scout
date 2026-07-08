@@ -45,6 +45,9 @@ const DEFAULT_SOURCE_CONCURRENCY = 3;
 const DEFAULT_QUERY_CONCURRENCY = 3;
 const DEFAULT_ENRICH_CONCURRENCY = 8;
 const DEFAULT_ENRICH_PROFILE_TIMEOUT_MS = 20_000;
+const DEFAULT_JINA_QUOTA_PROBE_TIMEOUT_MS = 5_000;
+const JINA_QUOTA_BLOCKING_STATUS_CODES = new Set([401, 403, 429]);
+const JINA_QUOTA_PROBE_DISABLED_VALUES = new Set(["0", "false", "off", "no"]);
 
 export const tiktokProvider = {
   platform: "tiktok",
@@ -179,8 +182,9 @@ async function discoverCreatorsFromFallbackSearch(plan, options = {}) {
     directProfiles: direct.size
   });
 
+  const sourceGroups = buildSearchSourceGroups(sources, sourceConcurrency);
   let sourceGroupIndex = 0;
-  for (const sourceGroup of chunkArray(sources, sourceConcurrency)) {
+  for (const sourceGroup of sourceGroups) {
     throwIfAborted(options.signal);
     const sourceGroupStartedAt = Date.now();
     logger?.info("tiktok_source_group.start", {
@@ -299,7 +303,7 @@ async function searchSourceForCreators(source, queries, plan, limit, queryConcur
     const batchStartedAt = Date.now();
     const results = await Promise.all(queryGroup.map(async (query) => {
       try {
-        const pages = await source.search(query, signal);
+        const pages = await source.search(query, signal, logger);
         return { ok: true, query, pages };
       } catch (error) {
         return { ok: false, query, error };
@@ -358,18 +362,26 @@ async function searchSourceForCreators(source, queries, plan, limit, queryConcur
 
 function buildSearchSources() {
   return [
-    process.env.TAVILY_API_KEY ? { name: "tavily", search: fetchTavilySearchPages } : null,
     process.env.JINA_API_KEY ? { name: "jina-search", search: fetchJinaSearchPages } : null,
+    process.env.TAVILY_API_KEY ? { name: "tavily", search: fetchTavilySearchPages } : null,
     process.env.SERPER_API_KEY ? { name: "serper", search: fetchSerperSearchPages } : null,
     process.env.BRAVE_SEARCH_API_KEY ? { name: "brave", search: fetchBraveSearchPages } : null,
     { name: "yahoo-web-search", search: fetchYahooSearchPages }
   ].filter(Boolean);
 }
 
+function buildSearchSourceGroups(sources, sourceConcurrency) {
+  if (sources[0]?.name !== "jina-search") return chunkArray(sources, sourceConcurrency);
+  return [
+    [sources[0]],
+    ...chunkArray(sources.slice(1), sourceConcurrency)
+  ];
+}
+
 function buildConfiguredSearchSourceNames() {
   return [
-    process.env.TAVILY_API_KEY ? "tavily" : "",
     process.env.JINA_API_KEY ? "jina-search" : "",
+    process.env.TAVILY_API_KEY ? "tavily" : "",
     process.env.SERPER_API_KEY ? "serper" : "",
     process.env.BRAVE_SEARCH_API_KEY ? "brave" : ""
   ].filter(Boolean);
@@ -563,20 +575,150 @@ async function fetchBraveSearchPages(query, signal) {
   }];
 }
 
-async function fetchJinaSearchPages(query, signal) {
+async function fetchJinaSearchPages(query, signal, logger) {
+  await probeJinaQuotaBeforeSearch(query, signal, logger);
+
+  const response = await fetchJinaSearchResponse(query, signal, 12_000);
+  logJinaRateLimit("jina_search.rate_limit", response, logger);
+  const text = await response.text();
+  if (!response.ok) throw createJinaApiError(response, text, "Jina Search 请求失败");
+  return [text];
+}
+
+async function probeJinaQuotaBeforeSearch(query, signal, logger) {
+  if (!shouldProbeJinaQuota()) return;
+
+  const startedAt = Date.now();
+  let response;
+  try {
+    response = await fetchJinaSearchResponse(
+      readJinaQuotaProbeQuery(query),
+      signal,
+      readPositiveInt(process.env.JINA_QUOTA_PROBE_TIMEOUT_MS, DEFAULT_JINA_QUOTA_PROBE_TIMEOUT_MS)
+    );
+  } catch (error) {
+    logger?.warn("jina_quota.probe_failed", {
+      stageElapsedMs: Date.now() - startedAt,
+      error
+    });
+    return;
+  }
+
+  const rateLimit = extractJinaRateLimit(response.headers);
+  if (response.ok) {
+    await cancelResponseBody(response);
+    logger?.info("jina_quota.probe_ok", {
+      stageElapsedMs: Date.now() - startedAt,
+      status: response.status,
+      rateLimit
+    });
+    return;
+  }
+
+  const body = await response.text().catch(() => "");
+  const error = createJinaApiError(response, body, "Jina API 额度探测失败");
+  const event = response.status === 401 ? "jina_quota.auth_failed" : "jina_quota.insufficient";
+  logger?.warn(event, {
+    stageElapsedMs: Date.now() - startedAt,
+    status: response.status,
+    code: error.code,
+    message: error.message,
+    rateLimit
+  });
+
+  if (JINA_QUOTA_BLOCKING_STATUS_CODES.has(response.status)) throw error;
+}
+
+function fetchJinaSearchResponse(query, signal, timeoutMs) {
   const url = new URL("https://s.jina.ai/");
   url.searchParams.set("q", query);
-  const response = await fetch(url, {
+  return fetch(url, {
     headers: {
       Accept: "text/plain",
       Authorization: `Bearer ${process.env.JINA_API_KEY}`,
       "User-Agent": "Mozilla/5.0"
     },
-    signal: createTimeoutSignal(12000, signal)
+    signal: createTimeoutSignal(timeoutMs, signal)
   });
-  const text = await response.text();
-  if (!response.ok) throw new Error(text || `Jina Search 请求失败：${response.status}`);
-  return [text];
+}
+
+function shouldProbeJinaQuota() {
+  return !JINA_QUOTA_PROBE_DISABLED_VALUES.has(String(process.env.JINA_QUOTA_PROBE_ENABLED || "").toLowerCase());
+}
+
+function readJinaQuotaProbeQuery(query) {
+  return String(process.env.JINA_QUOTA_PROBE_QUERY || query || "site:tiktok.com/@ creator").trim();
+}
+
+function createJinaApiError(response, body, fallbackMessage) {
+  const payload = parseJinaErrorPayload(body);
+  const message = buildJinaErrorMessage(response.status, payload.message || body || fallbackMessage);
+  const error = new Error(message);
+  error.name = "JinaApiError";
+  error.statusCode = response.status;
+  error.code = payload.code || classifyJinaStatusCode(response.status);
+  return error;
+}
+
+function buildJinaErrorMessage(status, message) {
+  if (status === 401) return `Jina API Key 无效或缺失：${message}`;
+  if (status === 403) return `Jina API 额度不足或无权限：${message}`;
+  if (status === 429) return `Jina API 请求过于频繁或额度受限：${message}`;
+  return message || `Jina 请求失败：${status}`;
+}
+
+function classifyJinaStatusCode(status) {
+  if (status === 401) return "JINA_AUTH_FAILED";
+  if (status === 403) return "JINA_QUOTA_INSUFFICIENT";
+  if (status === 429) return "JINA_RATE_LIMITED";
+  if (status === 503 || status === 504) return "JINA_TEMPORARILY_UNAVAILABLE";
+  return "JINA_REQUEST_FAILED";
+}
+
+function parseJinaErrorPayload(body) {
+  const text = String(body || "").trim();
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text);
+    return {
+      code: parsed.code || parsed.error?.code || "",
+      message: parsed.message || parsed.error?.message || parsed.detail || text
+    };
+  } catch {
+    return { message: text };
+  }
+}
+
+function logJinaRateLimit(event, response, logger) {
+  const rateLimit = extractJinaRateLimit(response.headers);
+  if (Object.keys(rateLimit).length) {
+    logger?.info(event, {
+      status: response.status,
+      rateLimit
+    });
+  }
+}
+
+function extractJinaRateLimit(headers) {
+  const fields = {};
+  for (const key of [
+    "x-ratelimit-remaining-requests",
+    "x-ratelimit-remaining-tokens",
+    "x-ratelimit-limit-requests",
+    "x-ratelimit-limit-tokens",
+    "retry-after",
+    "x-request-id",
+    "x-jina-request-id"
+  ]) {
+    const value = headers?.get?.(key);
+    if (value) fields[key] = value;
+  }
+  return fields;
+}
+
+async function cancelResponseBody(response) {
+  if (!response.body?.cancel) return;
+  await response.body.cancel().catch(() => null);
 }
 
 async function fetchYahooSearchMarkdown(query, signal) {
@@ -1553,6 +1695,11 @@ function chunkArray(items, size) {
 export const __testing = {
   buildAiSearchQuery,
   buildFallbackSearchFailureMessage,
+  buildSearchSources,
+  buildSearchSourceGroups,
+  createJinaApiError,
+  extractJinaRateLimit,
+  fetchJinaSearchPages,
   buildHashtagTerms,
   buildSearchQueries,
   candidatePriority,

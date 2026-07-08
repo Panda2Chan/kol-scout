@@ -133,12 +133,12 @@ AI 搜索优先读取：
 - `KOL_DATA_API_URL`
 - `KOL_DATA_API_KEY`
 
-TikTok 多源搜索聚合可选，配置后会优先合并这些搜索源结果：
+TikTok 多源搜索聚合可选，配置后会优先合并这些搜索源结果。Jina Search 会作为第一优先级搜索源单独先跑，后续源用于降级兜底：
 
-- `SERPER_API_KEY`
-- `TAVILY_API_KEY`
-- `BRAVE_SEARCH_API_KEY`
 - `JINA_API_KEY`
+- `TAVILY_API_KEY`
+- `SERPER_API_KEY`
+- `BRAVE_SEARCH_API_KEY`
 
 TikTok 召回调优可选：
 
@@ -147,6 +147,11 @@ TikTok 召回调优可选：
 - `TIKTOK_SEARCH_SOURCE_CONCURRENCY`：并发搜索源数量，默认 `3`
 - `TIKTOK_SEARCH_QUERY_CONCURRENCY`：单个搜索源内并发 query 数，默认 `3`
 - `TIKTOK_ENRICH_CONCURRENCY`：公开主页补全并发数，默认 `8`
+- `JINA_QUOTA_PROBE_ENABLED`：每次 Jina Search 前是否做额度探测，默认 `true`
+- `JINA_QUOTA_PROBE_TIMEOUT_MS`：Jina 额度探测超时时间，默认 `5000`
+- `JINA_QUOTA_PROBE_QUERY`：Jina 额度探测 query，默认复用当前搜索 query
+
+当 Jina 探测返回 401、403 或 429 时，后端会打印结构化 warn 日志，并跳过本次 Jina 搜索，继续尝试 Tavily、Serper、Brave 或 Yahoo 兜底。日志只记录状态码、Jina 错误码和 rate-limit 响应头，不记录完整 API key。
 
 AI 后处理调优可选：
 
