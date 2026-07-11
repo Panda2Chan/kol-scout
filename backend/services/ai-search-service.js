@@ -18,7 +18,7 @@ export function configureAiSearchCache(options = {}) {
   planCacheTtlMs = Number(options.ttlMs || PLAN_CACHE_TTL_MS);
 }
 
-const SYSTEM_PROMPT = `
+const X_SYSTEM_PROMPT = `
 你是 KOL 运营搜索规划器。把用户需求改写成 X/Twitter 站内搜索策略。
 只输出严格 JSON；不要解释；不要编造账号。
 JSON 字段：kolOpsRelevant, intent, queries, positiveTerms, mustHave, shouldHave, exclude, qualitySignals, notes。
@@ -44,6 +44,20 @@ JSON 字段：kolOpsRelevant, intent, queries, positiveTerms, mustHave, shouldHa
 5. exclude 必须包含 giveaway/airdrop/adult/porn/follow back/official/news/shop/store/brand/agency。
 6. qualitySignals 必须覆盖：个人账号、垂直内容、近期活跃、简介完整、真实互动、可联系。
 7. 如果用户给出粉丝数下限，把它写入 mustHave/qualitySignals，但不要用不可靠语法强行塞进 query。
+`.trim();
+
+const YOUTUBE_SYSTEM_PROMPT = `
+你是 KOL 运营搜索规划器。把用户需求改写成 YouTube 创作者频道搜索策略。
+只输出严格 JSON；不要解释；不要编造频道 handle。
+JSON 字段：kolOpsRelevant, intent, queries, positiveTerms, mustHave, shouldHave, exclude, qualitySignals, notes。
+通用查询规范：
+1. queries 必须是 4-8 条可执行的 YouTube 公开频道搜索查询，优先英文，必要时补充中文/日文/韩文同义词。
+2. 每条 query 必须面向 site:youtube.com/@、site:youtube.com/channel、site:youtube.com/c 或 site:youtube.com/user，覆盖「垂类/人群/地区/语言/内容形态」中至少 2 类要素。
+3. query 可包含 channel、creator、influencer、review、tutorial 等频道语义词，但不要编造频道 handle 或 channel id。
+4. 必须面向 KOL 运营找可合作个人创作者或团队频道，优先有稳定内容输出、简介完整、公开联系方式或商务合作入口的频道。
+5. exclude 必须包含 giveaway/airdrop/adult/porn/follow back/official/news/shop/store/brand/agency。
+6. qualitySignals 必须覆盖：个人或创作者频道、垂直内容、近期活跃、简介完整、真实互动、可联系。
+7. 如果用户给出订阅数或粉丝数下限，把它写入 mustHave/qualitySignals，但不要用不可靠语法强行塞进 query。
 `.trim();
 
 export class AiSearchError extends Error {
@@ -373,15 +387,18 @@ function buildKolOpsPrompt(brief, fallbackPlan, options) {
 }
 
 function buildSearchPlanSystemPrompt(platform) {
-  return String(platform || "").toLowerCase() === "tiktok" ? TIKTOK_SYSTEM_PROMPT : SYSTEM_PROMPT;
+  const prompts = {
+    tiktok: TIKTOK_SYSTEM_PROMPT,
+    youtube: YOUTUBE_SYSTEM_PROMPT,
+    x: X_SYSTEM_PROMPT
+  };
+  return prompts[String(platform || "").toLowerCase()] || X_SYSTEM_PROMPT;
 }
 
 function buildAiWebSearchPrompt(brief, plan, options) {
   const platform = options.platform || plan.platform || "tiktok";
-  const isTikTok = String(platform).toLowerCase() === "tiktok";
-  const platformName = isTikTok ? "TikTok" : "X/Twitter";
-  const profileHint = isTikTok ? "https://www.tiktok.com/@..." : "https://x.com/...";
-  const pageRule = isTikTok ? "TikTok @ profile page" : "X/Twitter profile page";
+  const platformMeta = getAiWebSearchPlatformMeta(platform);
+  const { platformName, profileHint, pageRule } = platformMeta;
 
   const system = `
 你是 KOL 运营全站搜索智能体。必须使用 web_search 查找真实公开 ${platformName} OP 主页。
@@ -410,6 +427,29 @@ JSON 格式：{"creators":[{"handle":"@...","name":"","profileUrl":"${profileHin
   ].join("\n");
 
   return { system, user };
+}
+
+function getAiWebSearchPlatformMeta(platform) {
+  const normalized = String(platform || "").toLowerCase();
+  if (normalized === "youtube") {
+    return {
+      platformName: "YouTube",
+      profileHint: "https://www.youtube.com/@...",
+      pageRule: "YouTube channel page, including /@handle, /channel, /c or /user"
+    };
+  }
+  if (normalized === "tiktok") {
+    return {
+      platformName: "TikTok",
+      profileHint: "https://www.tiktok.com/@...",
+      pageRule: "TikTok @ profile page"
+    };
+  }
+  return {
+    platformName: "X/Twitter",
+    profileHint: "https://x.com/...",
+    pageRule: "X/Twitter profile page"
+  };
 }
 
 function buildAiCreatorReviewPrompt(brief, creators, options) {
@@ -997,6 +1037,8 @@ function escapeRegExp(value) {
 }
 
 export const __testing = {
+  buildKolOpsPrompt,
+  buildSearchPlanSystemPrompt,
   buildAiWebSearchPrompt,
   compactFeedbackSummary,
   compactCreatorForAi,

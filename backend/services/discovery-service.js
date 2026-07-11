@@ -109,9 +109,11 @@ const DISCOVERY_TOTAL_TIMEOUT_MS = 10 * 60 * 1000;
 const TIKTOK_RAW_MIN_LIMIT = 80;
 const TIKTOK_RAW_MAX_LIMIT = 150;
 const TIKTOK_UNKNOWN_FOLLOWER_PENALTY = 6;
+const YOUTUBE_UNKNOWN_FOLLOWER_PENALTY = 6;
 const FEATURE_EVIDENCE_GAP_PENALTY = 8;
 const FEATURE_EVIDENCE_GAP_MAX_PENALTY = 18;
 const MIN_TIKTOK_WEB_PROFILE_SIGNALS = 2;
+const MIN_YOUTUBE_WEB_PROFILE_SIGNALS = 3;
 
 export class DiscoveryEmptyError extends Error {
   constructor(message) {
@@ -826,7 +828,7 @@ export function analyzeCreatorQuality(creator) {
 }
 
 function normalizeDiscoveredCreator(input, platform) {
-  const handle = normalizeHandle(input.handle || extractHandle(input.profileUrl));
+  const handle = normalizeCreatorHandle(input.handle || extractHandle(input.profileUrl, platform), platform);
   const rawHandle = handle.replace(/^@/, "");
 
   return {
@@ -834,7 +836,7 @@ function normalizeDiscoveredCreator(input, platform) {
     platform,
     name: cleanCreatorName(input.name, handle),
     handle,
-    profileUrl: input.profileUrl || buildProfileUrl(platform, rawHandle),
+    profileUrl: input.profileUrl || buildProfileUrl(platform, handle),
     avatarUrl: input.avatarUrl || "",
     bio: cleanCreatorBio(input.bio),
     contact: {
@@ -936,12 +938,12 @@ function getFilteredReason(creator, filters) {
   if (creator.quality?.concerns?.some((concern) => concern.includes("搬运") || concern.includes("商品"))) return "疑似聚合或商品号";
   if (creator.quality?.concerns?.some((concern) => concern.includes("无法验证创作者身份"))) return "信息不足";
   if (creator.quality?.concerns?.some((concern) => concern.includes("标题解析异常"))) return "信息不足";
-  if (creator.discovery?.kind === "web-search" && !(creator.tags || []).length) return "低匹配度";
   if (filters.minFollowers && creator.metrics?.followers == null) {
     return "粉丝数未知";
   }
   if (!creator.profileUrl) return "缺少主页";
   if (!hasMinimumProfileEvidence(creator)) return "信息不足";
+  if (creator.discovery?.kind === "web-search" && !(creator.tags || []).length) return "低匹配度";
   if ((creator.match?.score || 0) < filters.minMatchScore) {
     return "低匹配度";
   }
@@ -956,9 +958,17 @@ function getFilteredReason(creator, filters) {
 }
 
 function hasMinimumProfileEvidence(creator) {
-  if (creator.platform !== "tiktok" || creator.discovery?.kind !== "web-search") return true;
-  if (!isValidTikTokProfileUrl(creator.profileUrl)) return false;
-  if (!hasVerifiedProfileEnrichment(creator)) return false;
+  if (creator.discovery?.kind !== "web-search") return true;
+  if (creator.platform !== "tiktok" && creator.platform !== "youtube") return true;
+
+  if (creator.platform === "tiktok") {
+    if (!isValidTikTokProfileUrl(creator.profileUrl)) return false;
+    if (!hasVerifiedProfileEnrichment(creator)) return false;
+  }
+
+  if (creator.platform === "youtube") {
+    if (!isValidYoutubeProfileUrl(creator.profileUrl)) return false;
+  }
 
   const signals = [
     Boolean(creator.bio && creator.bio.length >= 20),
@@ -968,7 +978,8 @@ function hasMinimumProfileEvidence(creator) {
     Boolean(creator.contact?.email)
   ].filter(Boolean).length;
 
-  return signals >= MIN_TIKTOK_WEB_PROFILE_SIGNALS;
+  const minimumSignals = creator.platform === "youtube" ? MIN_YOUTUBE_WEB_PROFILE_SIGNALS : MIN_TIKTOK_WEB_PROFILE_SIGNALS;
+  return signals >= minimumSignals;
 }
 
 function hasVerifiedProfileEnrichment(creator) {
@@ -982,6 +993,19 @@ function isValidTikTokProfileUrl(profileUrl = "") {
     const host = url.hostname.replace(/^www\./, "").toLowerCase();
     return (host === "tiktok.com" || host === "m.tiktok.com")
       && /^\/@[A-Za-z0-9._]{2,24}(?:\/)?$/.test(decodeURIComponent(url.pathname));
+  } catch {
+    return false;
+  }
+}
+
+function isValidYoutubeProfileUrl(profileUrl = "") {
+  try {
+    const url = new URL(profileUrl);
+    const host = url.hostname.replace(/^www\./, "").toLowerCase();
+    if (host !== "youtube.com" && host !== "m.youtube.com") return false;
+    const path = decodeURIComponent(url.pathname);
+    return /^\/@[A-Za-z0-9._-]{2,64}(?:\/)?$/.test(path)
+      || /^\/(?:channel|c|user)\/[A-Za-z0-9._-]{2,128}(?:\/)?$/.test(path);
   } catch {
     return false;
   }
@@ -1114,9 +1138,9 @@ function calculateDiscoveryFetchLimit(platform, requestedLimit) {
 }
 
 function getUnknownFollowerPenalty(creator, filters) {
-  if (!filters.minFollowers || creator.platform !== "tiktok") return 0;
+  if (!filters.minFollowers || (creator.platform !== "tiktok" && creator.platform !== "youtube")) return 0;
   if (creator.metrics?.followers != null) return 0;
-  return TIKTOK_UNKNOWN_FOLLOWER_PENALTY;
+  return creator.platform === "youtube" ? YOUTUBE_UNKNOWN_FOLLOWER_PENALTY : TIKTOK_UNKNOWN_FOLLOWER_PENALTY;
 }
 
 function applyPostProcessingScores(creators, feedbackSummary = {}) {
@@ -1268,26 +1292,44 @@ function countReasons(rejected) {
 }
 
 function normalizePlatform(platform) {
-  const normalized = String(platform || "tiktok").toLowerCase();
-  return normalized === "twitter" ? "x" : normalized;
+  const normalized = String(platform || "tiktok").toLowerCase().replace(/\s+/g, "");
+  if (normalized === "twitter") return "x";
+  if (normalized === "yt" || normalized === "youtu.be") return "youtube";
+  return normalized || "tiktok";
 }
 
 function buildProfileUrl(platform, rawHandle) {
   if (!rawHandle) return "";
-  if (platform === "tiktok") return `https://www.tiktok.com/@${rawHandle}`;
-  return `https://x.com/${rawHandle}`;
+  const normalizedHandle = String(rawHandle || "").replace(/^@/, "").trim();
+  if (!normalizedHandle) return "";
+  if (platform === "tiktok") return `https://www.tiktok.com/@${normalizedHandle}`;
+  if (platform === "youtube") {
+    if (/^(?:channel|c|user)\//i.test(normalizedHandle)) {
+      return `https://www.youtube.com/${normalizedHandle}`;
+    }
+    return `https://www.youtube.com/@${normalizedHandle}`;
+  }
+  return `https://x.com/${normalizedHandle}`;
 }
 
-function normalizeHandle(handle) {
+function normalizeCreatorHandle(handle, platform = "") {
   if (!handle) return "";
   const raw = String(handle).replace(/^@/, "").trim();
+  if (platform === "youtube" && /^(?:channel|c|user)\//i.test(raw)) return raw;
   return raw ? `@${raw}` : "";
 }
 
-function extractHandle(profileUrl = "") {
+function extractHandle(profileUrl = "", platform = "") {
   try {
     const url = new URL(profileUrl);
     const host = url.hostname.replace(/^www\./, "").toLowerCase();
+    if (host === "youtube.com" || host === "m.youtube.com" || platform === "youtube") {
+      const path = decodeURIComponent(url.pathname);
+      const handleMatch = path.match(/^\/(@[A-Za-z0-9._-]{2,64})(?:\/|$)/);
+      if (handleMatch) return handleMatch[1];
+      const channelMatch = path.match(/^\/(channel|c|user)\/([A-Za-z0-9._-]{2,128})(?:\/|$)/);
+      return channelMatch ? `${channelMatch[1].toLowerCase()}/${channelMatch[2]}` : "";
+    }
     const match = host === "tiktok.com"
       ? url.pathname.match(/^\/@([A-Za-z0-9._]{2,24})(?:\/|$)/)
       : url.pathname.match(/^\/([A-Za-z0-9_]{1,15})(?:\/|$)/);

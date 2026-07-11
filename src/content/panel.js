@@ -33,6 +33,7 @@
     loadingTimer: null,
     loadingStep: 0,
     briefText: "",
+    platform: detectCurrentPlatform(),
     minFollowers: 0,
     theme: "system",
     candidates: [],
@@ -74,7 +75,7 @@
           <div class="kol-filter-row">
             <label class="kol-field-label">
               平台
-              <input value="X / Twitter" disabled />
+              <input data-field="platformLabel" value="TikTok" disabled />
             </label>
             <label class="kol-field-label">
               粉丝数下限
@@ -134,6 +135,7 @@
 
   const elements = {
     brief: root.querySelector('[data-field="brief"]'),
+    platformLabel: root.querySelector('[data-field="platformLabel"]'),
     minFollowers: root.querySelector('[data-field="minFollowers"]'),
     themeButton: root.querySelector('[data-action="theme"]'),
     themeIcon: root.querySelector('[data-role="themeIcon"]'),
@@ -286,7 +288,7 @@
         type: "DISCOVER_CREATORS",
         payload: {
           brief,
-          platform: "x",
+          platform: state.platform,
           limit: 20,
           filters: buildDiscoveryFilters()
         }
@@ -496,6 +498,7 @@
 
   function render() {
     elements.brief.value = state.briefText || "";
+    elements.platformLabel.value = platformLabel(state.platform);
     elements.minFollowers.value = state.minFollowers || "";
     renderThemeControl();
     elements.candidateCount.textContent = String(state.candidates.length);
@@ -746,6 +749,7 @@
     const saved = data[PANEL_STORAGE_KEY] || {};
     state.activeView = saved.activeView === "saved" ? "saved" : "candidates";
     state.briefText = saved.briefText || "";
+    state.platform = normalizePlatform(saved.platform || detectCurrentPlatform(), state.briefText);
     state.minFollowers = saved.minFollowers || 0;
     state.candidates = Array.isArray(saved.candidates) ? saved.candidates : [];
     state.summary = saved.summary || null;
@@ -758,6 +762,7 @@
       [PANEL_STORAGE_KEY]: {
         activeView: state.activeView,
         briefText: state.briefText,
+        platform: state.platform,
         minFollowers: state.minFollowers,
         candidates: state.candidates,
         summary: state.summary,
@@ -856,6 +861,7 @@
 
   function buildMatchBrief(rawText) {
     const normalized = String(rawText || "").trim();
+    state.platform = normalizePlatform(state.platform, normalized);
     return {
       id: `brief:${hashText(normalized)}`,
       rawText: normalized,
@@ -873,9 +879,10 @@
   }
 
   function buildMeta(creator) {
+    const platform = platformLabel(creator.platform);
     const followers = creator.metrics?.followers ? `${formatNumber(creator.metrics.followers)} 粉丝` : "粉丝未知";
     const email = findContactEmail(creator) ? "有邮箱" : "暂无邮箱";
-    return [creator.handle, followers, email, riskLabel(creator.quality?.fakeFollowerRisk)].filter(Boolean).join(" / ");
+    return [platform, creator.handle, followers, email, riskLabel(creator.quality?.fakeFollowerRisk)].filter(Boolean).join(" / ");
   }
 
   function buildBioText(creator) {
@@ -984,6 +991,35 @@
   function riskLabel(risk = "") {
     const map = { low: "低风险", medium: "中风险", high: "高风险" };
     return map[risk] || "";
+  }
+
+  function detectCurrentPlatform() {
+    const host = location.hostname.replace(/^www\./, "").toLowerCase();
+    if (host === "youtube.com" || host === "m.youtube.com") return "youtube";
+    if (host === "tiktok.com" || host === "m.tiktok.com") return "tiktok";
+    if (host === "x.com" || host === "twitter.com") return "x";
+    return "tiktok";
+  }
+
+  function normalizePlatform(value, briefText = "") {
+    const explicit = String(value || "").toLowerCase().replace(/\s+/g, "");
+    if (explicit === "tiktok" || explicit === "x" || explicit === "youtube") return explicit;
+    if (explicit === "twitter") return "x";
+    if (explicit === "yt" || explicit === "youtu.be") return "youtube";
+
+    const lower = String(briefText || "").toLowerCase();
+    if (/youtube|you\s*tube|\byt\b|youtu\.be|油管|频道|頻道|订阅|訂閱|channel/.test(lower)) return "youtube";
+    if (/tiktok|tik tok|抖音|短视频|带货视频/.test(lower)) return "tiktok";
+    if (/\bx\b|twitter/.test(lower)) return "x";
+    return detectCurrentPlatform();
+  }
+
+  function platformLabel(platform) {
+    return {
+      x: "X / Twitter",
+      youtube: "YouTube",
+      tiktok: "TikTok"
+    }[platform] || "目标平台";
   }
 
   function getInitials(creator) {

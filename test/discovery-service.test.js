@@ -206,6 +206,75 @@ test("TikTok web-search candidates need verified profile evidence", () => {
   assert.equal(__testing.hasMinimumProfileEvidence(enrichedCreator), true);
 });
 
+test("YouTube web-search candidates need channel evidence", () => {
+  const bareCreator = {
+    platform: "youtube",
+    profileUrl: "https://www.youtube.com/@BeautyLab",
+    discovery: { kind: "web-search", evidenceText: "" },
+    enrichment: { status: "partial" },
+    metrics: { followers: null },
+    tags: [],
+    bio: "",
+    avatarUrl: "",
+    contact: {}
+  };
+  const enrichedCreator = {
+    ...bareCreator,
+    bio: "Skincare reviews and makeup tutorials for beauty founders",
+    avatarUrl: "https://yt.example/avatar.jpg",
+    metrics: { followers: 42000 },
+    tags: ["skincare"],
+    discovery: { kind: "web-search", evidenceText: "42K subscribers skincare reviews" }
+  };
+
+  assert.equal(__testing.hasMinimumProfileEvidence(bareCreator), false);
+  assert.equal(__testing.getFilteredReason({
+    ...bareCreator,
+    match: { score: 75 },
+    quality: { score: 72, fakeFollowerRisk: "low", concerns: [] }
+  }, {
+    minFollowers: 0,
+    minMatchScore: 50,
+    minQualityScore: 55,
+    maxFakeFollowerRisk: "medium"
+  }), "信息不足");
+  assert.equal(__testing.hasMinimumProfileEvidence(enrichedCreator), true);
+});
+
+test("YouTube unknown subscribers reuse follower filtering and penalty", () => {
+  const filters = {
+    minFollowers: 10000,
+    minMatchScore: 50,
+    minQualityScore: 55,
+    maxFakeFollowerRisk: "medium"
+  };
+  const creator = {
+    platform: "youtube",
+    profileUrl: "https://www.youtube.com/@BeautyLab",
+    name: "Beauty Lab",
+    handle: "@BeautyLab",
+    bio: "Skincare reviews and makeup tutorials for beauty founders",
+    discovery: { kind: "web-search", evidenceText: "skincare reviews", sourceProvider: "youtube-web-search" },
+    enrichment: { status: "enriched" },
+    metrics: { followers: null },
+    tags: ["skincare"],
+    avatarUrl: "https://yt.example/avatar.jpg",
+    contact: {},
+    match: { score: 75, dimensions: { baseMatch: 75 } },
+    quality: { score: 72, fakeFollowerRisk: "low", concerns: [] }
+  };
+
+  assert.equal(__testing.getUnknownFollowerPenalty(creator, filters), 6);
+  assert.equal(__testing.getFilteredReason(creator, filters), "粉丝数未知");
+  assert.equal(
+    __testing.getFilteredReason({
+      ...creator,
+      metrics: { followers: 42000 }
+    }, filters),
+    ""
+  );
+});
+
 test("Low-score TikTok candidates do not bypass the minimum match score", () => {
   const filters = {
     minFollowers: 2000,

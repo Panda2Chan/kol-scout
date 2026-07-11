@@ -22,7 +22,7 @@
     {
       platform: "youtube",
       hosts: ["youtube.com", "www.youtube.com", "m.youtube.com"],
-      handlePattern: /^\/(@[^/?#]+|channel\/[^/?#]+|c\/[^/?#]+)\/?/
+      handlePattern: /^\/(@[^/?#]+|channel\/[^/?#]+|c\/[^/?#]+|user\/[^/?#]+)\/?/
     },
     {
       platform: "tiktok",
@@ -304,6 +304,9 @@
   function cleanProfileUrl(url, rule, handle) {
     const host = url.hostname;
     const rawHandle = handle.replace(/^@/, "");
+    if (rule.platform === "youtube" && /^(?:channel|c|user)\//i.test(handle)) {
+      return `${url.protocol}//${host}/${handle}`;
+    }
     const prefixedHandle = handle.startsWith("@") ? handle : `@${handle}`;
     const path = ["youtube", "tiktok"].includes(rule.platform)
       ? `/${prefixedHandle}`

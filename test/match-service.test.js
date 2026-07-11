@@ -14,6 +14,27 @@ test("TikTok has priority when multiple platforms are mentioned", () => {
   assert.equal(plan.platform, "tiktok");
 });
 
+test("creator search supports YouTube aliases and strips platform stopwords", () => {
+  const plan = buildCreatorSearchPlan({ rawText: "找 YouTube / YT 上的 AI 教程频道，粉丝 10k+，排除 news" });
+
+  assert.equal(plan.platform, "youtube");
+  assert.ok(plan.positiveTerms.includes("ai"));
+  assert.ok(plan.positiveTerms.includes("教程"));
+  assert.equal(plan.positiveTerms.includes("youtube"), false);
+  assert.equal(plan.positiveTerms.includes("yt"), false);
+  assert.equal(plan.constraints.followerRange.min, 10_000);
+});
+
+test("creator search extracts YouTube direct profiles", () => {
+  const plan = buildCreatorSearchPlan({
+    rawText: "参考 https://www.youtube.com/@BeautyCreator 和 https://youtube.com/channel/UCabc123_xyz"
+  }, { platform: "YouTube" });
+
+  assert.equal(plan.platform, "youtube");
+  assert.ok(plan.directProfiles.includes("@BeautyCreator"));
+  assert.ok(plan.directProfiles.includes("channel/UCabc123_xyz"));
+});
+
 test("basic trait constraints add positive and negative search terms", () => {
   const plan = buildCreatorSearchPlan({ rawText: "女，coser，颜值，亚洲" }, { platform: "tiktok" });
 

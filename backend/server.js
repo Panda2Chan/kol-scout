@@ -388,6 +388,7 @@ function summarizeFilters(filters = {}) {
 function platformLabel(platform) {
   return {
     x: "X",
+    youtube: "YouTube",
     tiktok: "TikTok"
   }[platform] || String(platform || "目标平台");
 }

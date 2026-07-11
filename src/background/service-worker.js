@@ -215,7 +215,7 @@ async function openCreatorProfile(profileUrl) {
 
   const url = new URL(profileUrl);
   if (!isAllowedCreatorProfileHost(url.hostname)) {
-    throw new Error("当前仅支持跳转 X 或 TikTok 创作者主页");
+    throw new Error("当前仅支持跳转 X、TikTok 或 YouTube 创作者主页");
   }
 
   return navigateActiveTab(url.toString());
@@ -223,7 +223,7 @@ async function openCreatorProfile(profileUrl) {
 
 function isAllowedCreatorProfileHost(hostname) {
   const host = String(hostname || "").replace(/^www\./, "").toLowerCase();
-  return ["x.com", "twitter.com", "tiktok.com", "m.tiktok.com", "vm.tiktok.com"].includes(host);
+  return ["x.com", "twitter.com", "tiktok.com", "m.tiktok.com", "vm.tiktok.com", "youtube.com", "m.youtube.com"].includes(host);
 }
 
 function normalizePlatform(platform) {

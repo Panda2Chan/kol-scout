@@ -29,7 +29,7 @@ export function getBackendConfig(env = process.env) {
 
   return {
     appEnv,
-    version: env.npm_package_version || "1.0.0",
+    version: env.npm_package_version || "1.3.1",
     isProduction,
     server: {
       host,

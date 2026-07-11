@@ -15,6 +15,30 @@ test("AI web search prompt follows TikTok by default", () => {
   assert.doesNotMatch(prompt.user, /X\/Twitter/);
 });
 
+test("AI search plan prompt uses YouTube-specific guidance", () => {
+  const system = __testing.buildSearchPlanSystemPrompt("youtube");
+
+  assert.match(system, /YouTube/);
+  assert.match(system, /site:youtube\.com\/@/);
+  assert.match(system, /site:youtube\.com\/channel/);
+  assert.doesNotMatch(system, /X\/Twitter/);
+  assert.doesNotMatch(system, /site:x\.com/);
+});
+
+test("AI web search prompt uses YouTube profile hints", () => {
+  const prompt = __testing.buildAiWebSearchPrompt(
+    { rawText: "找 YouTube 科技测评频道" },
+    { platform: "youtube", positiveTerms: ["tech", "review"], negativeTerms: [], aiSearch: { queries: [] } },
+    { platform: "youtube" }
+  );
+
+  assert.match(prompt.system, /YouTube/);
+  assert.match(prompt.system, /youtube\.com\/@\.\.\./);
+  assert.match(prompt.system, /\/channel/);
+  assert.match(prompt.user, /platform=youtube/);
+  assert.doesNotMatch(prompt.system, /X\/Twitter/);
+});
+
 test("AI creator reviews normalize by id and handle", () => {
   const reviews = __testing.normalizeAiCreatorReviews({
     reviews: [

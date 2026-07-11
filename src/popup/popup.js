@@ -797,10 +797,13 @@ function riskLabel(value) {
 }
 
 function normalizePlatform(value, briefText = "") {
-  const explicit = String(value || "").toLowerCase();
-  if (explicit === "tiktok" || explicit === "x") return explicit;
+  const explicit = String(value || "").toLowerCase().replace(/\s+/g, "");
+  if (explicit === "tiktok" || explicit === "x" || explicit === "youtube") return explicit;
+  if (explicit === "twitter") return "x";
+  if (explicit === "yt" || explicit === "youtu.be") return "youtube";
 
   const lower = String(briefText || "").toLowerCase();
+  if (/youtube|you\s*tube|\byt\b|youtu\.be|油管|频道|頻道|订阅|訂閱|channel/.test(lower)) return "youtube";
   if (/tiktok|tik tok|抖音|短视频|带货视频/.test(lower)) return "tiktok";
   return "tiktok";
 }
@@ -808,6 +811,7 @@ function normalizePlatform(value, briefText = "") {
 function platformLabel(platform) {
   return {
     x: "X",
+    youtube: "YouTube",
     tiktok: "TikTok"
   }[platform] || platform || "目标平台";
 }

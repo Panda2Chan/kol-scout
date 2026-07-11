@@ -1,6 +1,6 @@
 # KOL Scout
 
-面向 KOL 运营场景的 Chrome 插件 MVP。当前版本覆盖 X 和 TikTok：
+面向 KOL 运营场景的 Chrome 插件 MVP。当前版本覆盖 TikTok、YouTube 和 X：
 通过全站匹配召回真实创作者，读取公开主页资料，按匹配度和质量过滤后生成候选 list。
 
 更新记录见 [CHANGELOG.md](./CHANGELOG.md)。
@@ -8,9 +8,10 @@
 ## 已实现能力
 
 - Chrome Side Panel 形态，不遮挡网页内容
-- X / TikTok 全站匹配：输入关键词和筛选需求后召回真实创作者
+- TikTok / YouTube / X 全站匹配：输入关键词和筛选需求后召回真实创作者
 - X 支持 AI 搜索规划和 Web Search 召回，默认使用 cc-switch / OpenAI 配置
 - TikTok 支持三方数据源和公开网页搜索兜底召回
+- YouTube 支持频道搜索计划、三方数据源和公开网页搜索兜底召回
 - 公开主页补全：头像、简介、粉丝量、邮箱
 - 粉丝数下限筛选
 - 低质量、疑似品牌号、疑似假粉/异常互动过滤
@@ -31,7 +32,7 @@
 │   └── shared            # schema、storage、export
 └── backend
     ├── server.js         # 本地 API
-    ├── platforms         # 多平台 provider 架构，当前实现 X / TikTok
+    ├── platforms         # 多平台 provider 架构，当前实现 TikTok / YouTube / X
     └── services          # AI 搜索、匹配、发现和质量过滤
 ```
 

@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-07-11
+
+### fix: 发布 KOL Scout v1.3.1 YouTube fallback 切换到 Jina
+
+- 将 YouTube 公开搜索 fallback 从 Yahoo 页面请求切换为 `s.jina.ai` 搜索，统一使用 `JINA_API_KEY` 鉴权。
+- 未配置 `JINA_API_KEY` 时不再发起公开搜索请求，仅保留 direct profile 召回，并在 diagnostics 中说明跳过原因。
+- Jina 搜索 401/403/429/5xx 等失败不再直接打断 discovery stream，而是记录到 `discoveryMeta.errors` 后走业务空结果降级。
+- 补充 YouTube provider 测试，锁定 Jina 搜索、禁用 Yahoo、未配置 Jina 跳过公开搜索和 Jina 失败诊断行为。
+
+## 2026-07-09
+
+### feat: 发布 KOL Scout v1.3 YouTube 接入
+
+- 新增 YouTube 平台接入：支持 YouTube 搜索计划、provider 注册、三方数据源请求和公开网页搜索兜底。
+- 新增 YouTube 频道主页归一化：支持 `/@handle`、`/channel/<id>`、`/c/<name>` 和 `/user/<name>`，避免错误改写频道 URL。
+- 新增 YouTube 公开资料补全：尽量提取名称、简介、头像、订阅数、邮箱证据和主题标签，并把订阅数映射为 `metrics.followers`。
+- 扩展 discovery 主流程：YouTube 候选复用缓存、日志、用量统计、粉丝下限、质量过滤、AI 复核和排序链路。
+- 扩展 popup、sidepanel、页面浮层和 background 跳转白名单，让 YouTube 可被选择、展示、保存、导出和打开主页。
+- 同步 v1.3 发布元数据：更新 `package.json`、`package-lock.json`、`manifest.json`、后端健康检查版本兜底和 README 能力描述。
+- 补充 YouTube 搜索计划、provider、discovery 过滤和前端平台入口相关测试。
+
 ## 2026-07-06
 
 ### feat: 准备 v1.1 公网发布能力

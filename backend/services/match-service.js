@@ -34,6 +34,12 @@ const SEARCH_STOPWORDS = new Set([
   "tik",
   "tok",
   "twitter",
+  "youtube",
+  "you",
+  "tube",
+  "yt",
+  "channel",
+  "channels",
   "want",
   "with",
   "x",
@@ -224,7 +230,10 @@ function buildReasons(brief, creator, matchedKeywords, dimensions) {
 
 function parseRawBrief(text) {
   const lower = text.toLowerCase();
-  const platforms = ["tiktok", "x", "youtube", "instagram", "linkedin"].filter((platform) => lower.includes(platform));
+  const platforms = ["tiktok", "x", "youtube", "instagram", "linkedin"].filter((platform) => {
+    if (platform === "youtube") return /\b(?:youtube|you\s*tube|yt)\b|youtu\.be/i.test(lower);
+    return lower.includes(platform);
+  });
   const excludeKeywords = unique([
     ...["crypto", "politics", "giveaway", "博彩", "成人"].filter((keyword) => lower.includes(keyword.toLowerCase())),
     ...extractExplicitExcludeTerms(lower)
@@ -417,6 +426,20 @@ function extractDirectProfiles(text, platform) {
     }
   }
 
+  if (platform === "youtube") {
+    for (const match of rawText.matchAll(/(?:https?:\/\/)?(?:www\.|m\.)?youtube\.com\/@([A-Za-z0-9._-]{2,64})(?:[/?#]|$)/gi)) {
+      handles.add(`@${match[1]}`);
+    }
+
+    for (const match of rawText.matchAll(/(?:https?:\/\/)?(?:www\.|m\.)?youtube\.com\/(channel|c|user)\/([A-Za-z0-9._-]{2,128})(?:[/?#]|$)/gi)) {
+      handles.add(`${match[1].toLowerCase()}/${match[2]}`);
+    }
+
+    for (const match of rawText.matchAll(/(^|[^A-Za-z0-9_.-])@([A-Za-z0-9._-]{2,64})(?=$|[^A-Za-z0-9._-])/g)) {
+      handles.add(`@${match[2]}`);
+    }
+  }
+
   return [...handles];
 }
 
@@ -424,7 +447,8 @@ function normalizeSearchPlatform(platform) {
   const normalized = String(platform || "tiktok").toLowerCase().replace(/\s+/g, "");
   if (normalized === "twitter") return "x";
   if (normalized === "tiktok" || normalized === "douyin" || normalized === "抖音") return "tiktok";
-  return normalized;
+  if (normalized === "youtube" || normalized === "yt" || normalized === "youtu.be") return "youtube";
+  return normalized || "tiktok";
 }
 
 function buildSearchNotes(brief) {
