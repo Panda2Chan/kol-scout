@@ -122,12 +122,44 @@ npm run package:extension:dev
 
 ## AI 和数据源配置
 
-AI 搜索优先读取：
+AI 搜索规划和候选复核支持 DeepSeek、OpenAI 及兼容 OpenAI API 的中转平台。推荐使用通用配置：
 
-- `OPENAI_API_KEY`
-- `OPENAI_BASE_URL`
-- `OPENAI_MODEL`
-- cc-switch 配置：`~/.cc-switch`
+| 配置 | 含义 | 兼容别名（按优先级） |
+| --- | --- | --- |
+| `AI_API_KEY` | 供应商 API Key | `OPENAI_API_KEY`、`AI_OPENAI_API_KEY` |
+| `AI_BASE_URL` | API 地址 | `OPENAI_BASE_URL`、`AI_OPENAI_BASE_URL` |
+| `AI_MODEL` | 供应商实际模型 ID | `OPENAI_MODEL`、`AI_SEARCH_MODEL` |
+| `AI_API_MODE` | `chat` 或 `responses` | `AI_SEARCH_API_MODE` |
+
+通用变量优先于兼容别名。模型优先级为 `AI_MODEL` → `OPENAI_MODEL` → `AI_SEARCH_MODEL` → cc-switch 当前 Codex 模型；没有写死的默认模型，也不限制模型名称白名单。
+
+未显式设置环境 Key 或地址时，默认读取运行后端的同一系统用户下 `~/.cc-switch/settings.json` 和 `~/.cc-switch/cc-switch.db`，跟随 cc-switch 当前 Codex 供应商。只设置环境模型可以覆盖其模型并沿用其连接凭据。
+
+显式设置环境 Key 或地址后，连接凭据只从环境变量读取，不会混用 cc-switch 中其他供应商的 Key 或地址；此时必须同时提供环境模型。API 模式优先读取环境配置；沿用 cc-switch 连接时，未覆盖则读取当前 `model_provider` 对应的 `wire_api`。没有模式配置时使用 `chat`。缺少模型、Key 或地址时会明确提示并回退规则流程。
+
+地址支持域名根地址（自动补 `/v1`）、带任意路径的 API 前缀（保留路径），以及完整的 `/chat/completions` 或 `/responses` 端点（先归一化为 API 前缀）。
+
+DeepSeek 示例（`deepseek-flash` 仅为示例，请以 [DeepSeek 官方文档](https://api-docs.deepseek.com/) 和账号可用模型为准）：
+
+```dotenv
+AI_API_KEY=替换为你的DeepSeek密钥
+AI_BASE_URL=https://api.deepseek.com
+AI_MODEL=deepseek-flash
+AI_API_MODE=chat
+AI_WEB_SEARCH_DISABLED=true
+```
+
+Command Code 等 OpenAI 兼容中转平台示例（请选支持 Chat Completions/Responses 的模型，模型 ID 和 API 模式见 [Command Code 官方接口文档](https://commandcode.ai/docs/provider)）：
+
+```dotenv
+AI_API_KEY=替换为你的中转平台密钥
+AI_BASE_URL=https://api.commandcode.ai/provider/v1
+AI_MODEL=替换为平台支持的实际模型ID
+AI_API_MODE=chat
+AI_WEB_SEARCH_DISABLED=true
+```
+
+模型推理能力不代表支持内置 `web_search` 工具。供应商不支持该工具时，设置 `AI_WEB_SEARCH_DISABLED=true`；AI 搜索规划和候选复核仍可使用，候选召回继续使用平台搜索和已配置的数据源。
 
 三方 KOL 数据源可选：
 

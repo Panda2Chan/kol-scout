@@ -4,7 +4,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildCacheKey, createMemoryCacheAdapter } from "./cache-service.js";
 
-const DEFAULT_MODEL = "gpt-5.5";
 const DEFAULT_TIMEOUT_MS = 45_000;
 const AI_POSTPROCESS_TIMEOUT_MS = 45_000;
 const AI_POSTPROCESS_LIMIT = 30;
@@ -73,11 +72,12 @@ export async function buildAiCreatorSearchPlan(brief, fallbackPlan, options = {}
   const config = loadAiConfig(options);
   const basePlan = fallbackPlan || {};
   const requireAi = options.requireAi ?? process.env.AI_SEARCH_REQUIRED === "true";
+  const configError = getAiConfigError(config);
 
-  if (!config.apiKey || !config.baseUrl) {
+  if (configError) {
     if (requireAi) {
       throw new AiSearchError(
-        "未找到 OpenAI/cc switch API 配置，无法执行 AI 全站匹配。",
+        `${configError}，无法执行 AI 全站匹配。`,
         "AI_CONFIG_MISSING",
         424
       );
@@ -85,7 +85,7 @@ export async function buildAiCreatorSearchPlan(brief, fallbackPlan, options = {}
 
     return withFallback(basePlan, {
       enabled: false,
-      reason: "未找到 OpenAI/cc switch API 配置"
+      reason: configError
     });
   }
 
@@ -137,8 +137,9 @@ export async function buildAiCreatorSearchPlan(brief, fallbackPlan, options = {}
 
 export async function discoverCreatorsWithAiWebSearch(brief, plan, options = {}) {
   const config = loadAiConfig(options);
-  if (!config.apiKey || !config.baseUrl) {
-    throw new AiSearchError("未找到 OpenAI/cc switch API 配置，无法执行 AI Web Search。", "AI_CONFIG_MISSING", 424);
+  const configError = getAiConfigError(config);
+  if (configError) {
+    throw new AiSearchError(`${configError}，无法执行 AI Web Search。`, "AI_CONFIG_MISSING", 424);
   }
 
   const prompt = buildAiWebSearchPrompt(brief, plan, options);
@@ -211,10 +212,11 @@ export async function postProcessCreatorsWithAi(brief, creators = [], options = 
   }
 
   const config = loadAiConfig(options);
-  if (!config.apiKey || !config.baseUrl) {
+  const configError = getAiConfigError(config);
+  if (configError) {
     return {
       creators: sourceCreators,
-      meta: { enabled: false, reason: "未找到 OpenAI/cc switch API 配置" }
+      meta: { enabled: false, reason: configError }
     };
   }
 
@@ -257,6 +259,10 @@ export async function postProcessCreatorsWithAi(brief, creators = [], options = 
 function buildPlanCacheKey(brief, fallbackPlan, config, feedbackSummary = {}) {
   return buildCacheKey("ai-plan", [
     config.provider,
+    config.baseUrl,
+    config.apiMode,
+    // 仅参与缓存键哈希，不把密钥存入缓存内容或日志。
+    config.apiKey,
     config.model,
     fallbackPlan.platform || "tiktok",
     String(brief.rawText || "").trim().toLowerCase(),
@@ -283,23 +289,25 @@ async function getCachedPlan(cacheKey) {
 }
 
 export function loadAiConfig(options = {}) {
+  const env = options.env || process.env;
   const envConfig = {
-    apiKey: process.env.OPENAI_API_KEY || process.env.AI_OPENAI_API_KEY || "",
-    baseUrl: process.env.OPENAI_BASE_URL || process.env.AI_OPENAI_BASE_URL || "",
-    model: process.env.OPENAI_MODEL || process.env.AI_SEARCH_MODEL || DEFAULT_MODEL,
+    apiKey: firstConfigured(env.AI_API_KEY, env.OPENAI_API_KEY, env.AI_OPENAI_API_KEY),
+    baseUrl: firstConfigured(env.AI_BASE_URL, env.OPENAI_BASE_URL, env.AI_OPENAI_BASE_URL),
+    model: firstConfigured(env.AI_MODEL, env.OPENAI_MODEL, env.AI_SEARCH_MODEL),
+    apiMode: firstConfigured(env.AI_API_MODE, env.AI_SEARCH_API_MODE),
     provider: "env"
   };
 
-  if (envConfig.apiKey && envConfig.baseUrl) {
+  // 显式环境连接必须自洽，不能把一个供应商的密钥拼到另一个地址上。
+  if (envConfig.apiKey || envConfig.baseUrl) {
     return normalizeConfig(envConfig);
   }
 
   const ccConfig = loadCcSwitchCodexConfig(options);
   return normalizeConfig({
-    apiKey: envConfig.apiKey || ccConfig.apiKey,
-    baseUrl: envConfig.baseUrl || ccConfig.baseUrl,
-    model: process.env.AI_SEARCH_MODEL || envConfig.model || ccConfig.model || DEFAULT_MODEL,
-    provider: ccConfig.provider || envConfig.provider
+    ...ccConfig,
+    model: envConfig.model || ccConfig.model,
+    apiMode: envConfig.apiMode || ccConfig.apiMode
   });
 }
 
@@ -326,11 +334,14 @@ function loadCcSwitchCodexConfig(options = {}) {
     );
     const config = JSON.parse(rows[0]?.settings_config || "{}");
     const tomlText = String(config.config || "");
+    const modelProvider = parseTomlString(tomlText, "model_provider");
+    const providerSection = modelProvider ? `model_providers.${modelProvider}` : "";
 
     return {
       apiKey: config.auth?.OPENAI_API_KEY || "",
-      baseUrl: parseTomlString(tomlText, "base_url") || endpointRows[0]?.url || "",
-      model: parseTomlString(tomlText, "model") || DEFAULT_MODEL,
+      baseUrl: parseTomlString(tomlText, "base_url", providerSection) || endpointRows[0]?.url || "",
+      model: parseTomlString(tomlText, "model"),
+      apiMode: parseTomlString(tomlText, "wire_api", providerSection),
       provider: "cc-switch"
     };
   } catch {
@@ -350,19 +361,49 @@ function sqlString(value) {
   return `'${String(value || "").replaceAll("'", "''")}'`;
 }
 
-function parseTomlString(text, key) {
-  const match = String(text || "").match(new RegExp(`^${escapeRegExp(key)}\\s*=\\s*"([^"]+)"`, "m"));
-  return match?.[1] || "";
+function parseTomlString(text, key, section = "") {
+  let currentSection = "";
+  const pattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*(?:"((?:\\\\.|[^"\\\\])*)"|'([^']*)')\\s*(?:#.*)?$`);
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const header = line.match(/^\s*\[([^\]]+)\]\s*(?:#.*)?$/);
+    if (header) {
+      currentSection = header[1].trim();
+      continue;
+    }
+    if (currentSection !== section) continue;
+    const match = line.match(pattern);
+    if (!match) continue;
+    if (match[2] != null) return match[2];
+    try { return JSON.parse(`"${match[1]}"`); } catch { return ""; }
+  }
+  return "";
+}
+
+function firstConfigured(...values) {
+  return values.map((value) => String(value || "").trim()).find(Boolean) || "";
+}
+
+function getAiConfigError(config) {
+  const missing = [];
+  if (!config.apiKey) missing.push("API Key");
+  if (!config.baseUrl) missing.push("接口地址");
+  if (!config.model) missing.push("模型（AI_MODEL/OPENAI_MODEL 或 cc-switch 当前模型）");
+  return missing.length ? `AI 配置不完整：缺少${missing.join("、")}` : "";
 }
 
 function normalizeConfig(config) {
-  const baseUrl = String(config.baseUrl || "").replace(/\/+$/, "");
+  const baseUrl = firstConfigured(config.baseUrl).replace(/\/+$/, "");
+  const hasRequestPath = /\/(?:chat\/completions|responses)$/.test(baseUrl);
+  let apiPrefix = baseUrl.replace(/\/(?:chat\/completions|responses)$/, "");
+  // 域名根地址兼容 /v1；供应商提供的路径前缀和完整端点不重复追加版本。
+  if (!hasRequestPath && /^https?:\/\/[^/]+$/i.test(apiPrefix)) apiPrefix += "/v1";
   return {
-    apiKey: config.apiKey || "",
+    apiKey: firstConfigured(config.apiKey),
     baseUrl,
-    responsesUrl: baseUrl.endsWith("/v1") ? `${baseUrl}/responses` : `${baseUrl}/v1/responses`,
-    chatCompletionsUrl: baseUrl.endsWith("/v1") ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`,
-    model: config.model || DEFAULT_MODEL,
+    responsesUrl: apiPrefix ? `${apiPrefix}/responses` : "",
+    chatCompletionsUrl: apiPrefix ? `${apiPrefix}/chat/completions` : "",
+    model: firstConfigured(config.model),
+    apiMode: config.apiMode === "responses" ? "responses" : "chat",
     provider: config.provider || "unknown"
   };
 }
@@ -481,7 +522,7 @@ JSON 格式：{"reviews":[{"id":"","semanticScore":0,"evidenceConfidence":0,"col
 }
 
 async function requestAiJson(config, prompt, signal, maxTokens = 900) {
-  if (process.env.AI_SEARCH_API_MODE !== "responses") {
+  if (config.apiMode !== "responses") {
     return requestChatCompletionsJson(config, prompt, "", signal, maxTokens);
   }
 
@@ -550,7 +591,7 @@ async function requestChatCompletionsJson(config, prompt, previousError = "", si
 }
 
 async function requestAiSearchPlan(config, prompt, signal) {
-  if (process.env.AI_SEARCH_API_MODE !== "responses") {
+  if (config.apiMode !== "responses") {
     return requestChatCompletionsSearchPlan(config, prompt, "", signal);
   }
 

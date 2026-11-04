@@ -20,3 +20,5 @@ backend/logs/
 # Editor state
 .idea/
 .vscode/
+.analysis/
+logs
